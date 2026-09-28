@@ -1,0 +1,95 @@
+# Quartus IP/Source File list for Sun-2 MiSTer core
+
+set_global_assignment -name QIP_FILE sys/sys.qip
+
+# Packages (must be compiled first)
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish5380/src/wish5380_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/wish82586_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/gen/rd68011_ucode_pkg.sv
+
+# RD68011 CPU
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/gen/rd68011_decode_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/gen/rd68011_loop_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/gen/rd68011_ucode_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/gen/rd68011_uctl_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/gen/rd68011_urq_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_dedge_ff.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_sync.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_shifter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_mul.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_divider.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_biu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_seq.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Inputs/RD68011/rtl/rd68011_top.sv
+
+# Submodules & IP
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/z8530_scc/z8530_scc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish5380/src/scsi_fabric.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish5380/src/scsi_targ.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/async_fifo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/sync_fifo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/dp_ram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/crc32_eth.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/mii_rx.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/mii_tx.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/wb_master.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/wb_arb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/ie_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/ie_cu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/ie_ru.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/wish82586.sv
+set_global_assignment -name SYSTEMVERILOG_FILE build/inputs/Wish82586/src/wb_mdio.sv
+
+# Core RTL (Verilog-2001 & SystemVerilog)
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/sun2_mmu.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/ctx_reg.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/pmap.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/smap.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/sram_sync.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/sram_sync_16bits_bytewritable.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/bootrom.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/idprom.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/gen8bit_reg.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/sun2_fb_ctl.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/ttl_am9513.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/mm58167.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/ttl_74F151.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/ttl_74LS148.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/sun2_wishbone_bridge.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/sun2_async_fifo.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/sun2_fifo_bridge.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/sun2_cached_fifo_bridge.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-common/video_timing.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-common/fb_scanout.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-common/reset_sync.sv
+
+# MultiBus peripherals
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-multibus/sun2_xy450.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-multibus/sun2_mb_3c400.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-multibus/sun2_mb_ether.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-multibus/sun2_mb_scsi.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-common/sun2_scsi_core.sv
+
+# VME components
+set_global_assignment -name VERILOG_FILE rtl/sun2-vme/sun2_bus_arb.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-vme/sun2_dvma.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-vme/sun2_ether_ctl.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-vme/sun2_ethernet.sv
+set_global_assignment -name VERILOG_FILE rtl/sun2-vme/sun2_phy_status.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-vme/sun2_vme_scsi.sv
+
+# Sun-2 Top Levels
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/sun2_fpga.v
+set_global_assignment -name VERILOG_FILE rtl/sun2-common/top_fpga.v
+
+# MiSTer bridges
+set_global_assignment -name VERILOG_FILE rtl/pll.v
+set_global_assignment -name VERILOG_FILE rtl/sdram.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_block.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_kbd_mouse.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_sdram.sv
+
+# Top-level emu module
+set_global_assignment -name SYSTEMVERILOG_FILE Sun-2.sv

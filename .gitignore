@@ -1,6 +1,11 @@
 *~
 Old
 
+# TEMLIB reference files
+temlib_r4.1.tgz
+temlib_src/
+SS/
+
 # generated artefacts
 /build/
 
@@ -22,3 +27,22 @@ work-obj*.cf
 clockInfo.txt
 hs_err_pid*.log
 *.str
+
+# Quartus build artifacts
+db/
+incremental_db/
+output_files/
+greybox_tmp/
+simulation/
+hc_output/
+*.rpt
+*.summary
+*.done
+*.qws
+*.sof
+*.rbf
+*.smsg
+*.jdi
+*.pin
+*.qdf
+*.ppf

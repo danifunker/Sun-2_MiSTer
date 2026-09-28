@@ -9,6 +9,10 @@ module top(input         cpu_clk,
 	   /* serial */
 	   output 	 tx,
 	   input 	 rx,
+	   input 	 kbm_rxda,
+	   output 	 kbm_txda,
+	   input 	 kbm_rxdb,
+	   output 	 kbm_txdb,
 
 	   /* debug */
 	   output [7:0]  diag_leds,
@@ -271,6 +275,10 @@ module top(input         cpu_clk,
 
 		  .tx(tx),
 		  .rx(rx),
+		  .kbm_rxda(kbm_rxda),
+		  .kbm_txda(kbm_txda),
+		  .kbm_rxdb(kbm_rxdb),
+		  .kbm_txdb(kbm_txdb),
 
 		  .EN_DVMA_o(EN_DVMA),
 		  .ether_core_reset_n(ether_core_reset_n),

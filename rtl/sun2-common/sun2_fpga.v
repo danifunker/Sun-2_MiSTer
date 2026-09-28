@@ -35,6 +35,10 @@ module sun2_fpga(input         cpu_clk,
 		 /* serial */
 		 output        tx,
 		 input 	       rx,
+		 input 	       kbm_rxda,
+		 output        kbm_txda,
+		 input 	       kbm_rxdb,
+		 output        kbm_txdb,
 		 /* DVMA and on-board Ethernet.  The controller and its bus
 		  master live in top_fpga, because that is where the CPU bus is
 		  muxed; what belongs here is the control register in device
@@ -1432,8 +1436,8 @@ module sun2_fpga(input         cpu_clk,
 			  // inputs are held deasserted rather than left floating.
 			  .rxca(1'b0),
 			  .txca(1'b0),
-			  .rxda(1'b1),
-			  .txda(),
+			  .rxda(kbm_rxda),
+			  .txda(kbm_txda),
 			  .ctsa_n(1'b1),
 			  .dcda_n(1'b1),
 			  .synca_n(1'b1),
@@ -1443,8 +1447,8 @@ module sun2_fpga(input         cpu_clk,
 			  // Channel B -- mouse.  Same treatment.
 			  .rxcb(1'b0),
 			  .txcb(1'b0),
-			  .rxdb(1'b1),
-			  .txdb(),
+			  .rxdb(kbm_rxdb),
+			  .txdb(kbm_txdb),
 			  .ctsb_n(1'b1),
 			  .dcdb_n(1'b1),
 			  .syncb_n(1'b1),
@@ -1457,6 +1461,8 @@ module sun2_fpga(input         cpu_clk,
    // mux and DTACK terms below fold away entirely.
    assign MATCH_KBM = 1'b0;
    assign kbm_out   = 8'h00;
+   assign kbm_txda  = 1'b1;
+   assign kbm_txdb  = 1'b1;
    // Driven, not left open.  INT6_n below is the wired-OR of both SCCs, and an
    // implicit undriven wire there is warning Synth 8-6901 in Vivado and an
    // error in xvlog -- the shape that left fb_video_en dead in every bitstream

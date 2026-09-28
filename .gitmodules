@@ -1,12 +1,12 @@
 [submodule "Inputs/Suska_Configware"]
 	path = Inputs/Suska_Configware
-	url = git@github.com:MelkhiorVintageComputing/Suska_Configware.git
+	url = https://github.com/MelkhiorVintageComputing/Suska_Configware.git
 [submodule "Inputs/z8530_scc"]
 	path = Inputs/z8530_scc
 	url = https://github.com/vz50938/z8530_scc
 [submodule "Inputs/Wish82586"]
 	path = Inputs/Wish82586
-	url = git@github.com:MelkhiorVintageComputing/Wish82586.git
+	url = https://github.com/MelkhiorVintageComputing/Wish82586.git
 [submodule "Inputs/sunos-34-src"]
 	path = Inputs/sunos-34-src
 	url = https://github.com/calmsacibis995/sunos-34-src
@@ -18,10 +18,10 @@
 	url = https://github.com/hdl-util/hdmi
 [submodule "Inputs/Wish5380"]
 	path = Inputs/Wish5380
-	url = git@github.com:MelkhiorVintageComputing/Wish5380.git
+	url = https://github.com/MelkhiorVintageComputing/Wish5380.git
 [submodule "Inputs/RD68011"]
 	path = Inputs/RD68011
-	url = git@github.com:MelkhiorVintageComputing/RD68011.git
+	url = https://github.com/MelkhiorVintageComputing/RD68011.git
 [submodule "Inputs/BrianHG-DDR3"]
 	path = Inputs/BrianHG-DDR3
 	url = https://github.com/BrianHGinc/BrianHG-DDR3-Controller.git
