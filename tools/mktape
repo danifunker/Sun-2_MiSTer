@@ -42,6 +42,17 @@
 #
 # suninstall can change any of it.  --no-label leaves the disk all zero.
 #
+# --size MB makes a disk of that size instead, up to 1024: a disk with just
+# a root and a swap partition, swap (--swap MB, 32 by default) at the end.
+# Its cylinders are 16 heads of 64 sectors, half a megabyte, and two of them
+# are alternates.  1024 is the most a Sun-2 can address at all: every Sun-2
+# SCSI driver -- the PROM's, the standalone one, the kernel's -- sends the
+# six-byte READ and WRITE, whose block address is 21 bits.
+#
+# A disk of this shape is not in SunOS 4.0's /etc/format.dat, and suninstall
+# labels the disk with format, so its two format.dat lines are printed for
+# adding to the miniroot's copy before running suninstall.
+#
 # Blocks 1-15, where installboot will put the real boot program, hold a stub
 # until then.  The PROM auto-boots a labelled disk without looking at what it
 # loads, and an empty one would run 7.5 KB of zeroes into whatever follows; the
@@ -65,28 +76,58 @@ BLOCK = 512
 MAX_VOLUMES = 3
 MAX_FILES = 30
 
-# The Micropolis 1558.
-D_NCYL, D_ACYL, D_PCYL, D_NHEAD, D_NSECT = 1218, 2, 1224, 15, 35
-D_CYL = D_NHEAD * D_NSECT                # blocks a cylinder
-DISK_BYTES = D_PCYL * D_CYL * BLOCK
-D_PARTS = {"a": (0, 61), "b": (61, 122), "c": (0, D_NCYL), "g": (183, D_NCYL - 183)}
+MAX_DISK_BLOCKS = 1 << 21                # the six-byte CDB's 21-bit block address
 
 
-def disk_label():
+def micropolis_1558():
+    """The disk SunOS 4.0's format.dat already knows."""
+    return dict(name="Micropolis 1558", ncyl=1218, acyl=2, pcyl=1224, nhead=15, nsect=35,
+                parts={"a": (0, 61), "b": (61, 122), "c": (0, 1218), "g": (183, 1218 - 183)})
+
+
+def sized_disk(size_mb, swap_mb):
+    """Root and swap only, on half-megabyte cylinders."""
+    pcyl = size_mb * 2
+    ncyl = pcyl - 2
+    swap = swap_mb * 2
+    if not 16 <= size_mb <= 1024:
+        sys.exit("mktape: --size is 16 to 1024 MB")
+    if not 4 <= swap_mb or swap + 16 > ncyl:
+        sys.exit("mktape: --swap does not leave room for a root")
+    return dict(name=f"MiSTer {size_mb}MB", ncyl=ncyl, acyl=2, pcyl=pcyl, nhead=16, nsect=64,
+                parts={"a": (0, ncyl - swap), "b": (ncyl - swap, swap), "c": (0, ncyl)})
+
+
+def disk_bytes(g):
+    return g["pcyl"] * g["nhead"] * g["nsect"] * BLOCK
+
+
+def format_dat(g):
+    """The two /etc/format.dat lines that make format know the disk."""
+    cyl = g["nhead"] * g["nsect"]
+    parts = " : ".join(f"{p} = {c}, {n * cyl}" for p, (c, n) in sorted(g["parts"].items()))
+    return (f'disk_type = "{g["name"]}" : ctlr = MD21 : ncyl = {g["ncyl"]} : acyl = {g["acyl"]}'
+            f' : pcyl = {g["pcyl"]} : nhead = {g["nhead"]} : nsect = {g["nsect"]}'
+            f' : rpm = 3600 : bpt = {g["nsect"] * BLOCK}\n'
+            f'partition = "{g["name"]}" : disk = "{g["name"]}" : ctlr = MD21 : {parts}\n')
+
+
+def disk_label(g):
     b = bytearray(BLOCK)
-    text = (f"Micropolis 1558 cyl {D_NCYL} alt {D_ACYL} hd {D_NHEAD} sec {D_NSECT}").encode()
+    text = (f'{g["name"]} cyl {g["ncyl"]} alt {g["acyl"]} hd {g["nhead"]} sec {g["nsect"]}').encode()
     b[0:len(text)] = text
     struct.pack_into(">12H", b, 420,
                      3600,       # dkl_rpm
-                     D_PCYL,     # dkl_pcyl
+                     g["pcyl"],  # dkl_pcyl
                      0, 0, 0,    # dkl_apc, gap1, gap2
                      1,          # dkl_intrlv
-                     D_NCYL, D_ACYL, D_NHEAD, D_NSECT,
+                     g["ncyl"], g["acyl"], g["nhead"], g["nsect"],
                      0, 0)       # dkl_bhead, dkl_ppart
+    cyl = g["nhead"] * g["nsect"]
     for i, name in enumerate("abcdefgh"):
-        if name in D_PARTS:
-            cyl, ncyl = D_PARTS[name]
-            struct.pack_into(">II", b, 444 + 8 * i, cyl, ncyl * D_CYL)
+        if name in g["parts"]:
+            c, n = g["parts"][name]
+            struct.pack_into(">II", b, 444 + 8 * i, c, n * cyl)
     struct.pack_into(">H", b, 508, 0xDABE)
     ck = 0
     for (w,) in struct.iter_unpack(">H", bytes(b[:510])):
@@ -220,19 +261,30 @@ def main():
     ap = argparse.ArgumentParser(description="Build a Sun-2 MT-02 tape image (.qic).")
     ap.add_argument("inputs", nargs="*", help="volumes: directories, archives or .tap files")
     ap.add_argument("-o", "--output", help="the tape image to write")
-    ap.add_argument("--disk", help="also write an empty, labelled Micropolis 1558 disk image here")
+    ap.add_argument("--disk", help="also write an empty, labelled disk image here (a Micropolis 1558 by default)")
+    ap.add_argument("--size", type=int, help="make the disk this many MB instead, up to 1024: / and swap only")
+    ap.add_argument("--swap", type=int, default=32, help="swap partition size in MB with --size (default 32)")
     ap.add_argument("--no-label", action="store_true", help="leave that disk all zero, for format to label")
     ap.add_argument("-v", "--verbose", action="store_true", help="list every file")
     a = ap.parse_args()
 
     if a.disk:
+        g = sized_disk(a.size, a.swap) if a.size else micropolis_1558()
+        assert g["pcyl"] * g["nhead"] * g["nsect"] <= MAX_DISK_BLOCKS
         with open(a.disk, "wb") as f:
             if not a.no_label:
-                f.write(disk_label())
+                f.write(disk_label(g))
                 f.write(boot_stub())
-            f.truncate(DISK_BYTES)
-        print(f"{a.disk}: Micropolis 1558, {DISK_BYTES} bytes, "
-              + ("blank" if a.no_label else "labelled: a / 16 MB, b swap 32 MB, g /usr 278 MB"))
+            f.truncate(disk_bytes(g))
+        cyl = g["nhead"] * g["nsect"]
+        layout = ", ".join(f"{p} {n * cyl * BLOCK // 1048576} MB"
+                           for p, (c, n) in sorted(g["parts"].items()) if p != "c")
+        print(f'{a.disk}: {g["name"]}, {disk_bytes(g)} bytes, '
+              + ("blank" if a.no_label else f"labelled: {layout}"))
+        if a.size and not a.no_label:
+            print("\nSunOS 4.0's format does not know this disk.  On the miniroot, before\n"
+                  "suninstall, add these two lines to /etc/format.dat:\n")
+            print(format_dat(g))
 
     if not a.inputs:
         if not a.disk:

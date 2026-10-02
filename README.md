@@ -15,7 +15,11 @@ still describes the machine.
 
 ## MiSTer
 
-**Status: builds are being brought up; nothing has run on a MiSTer yet.**
+**Status: SunOS 4.0 installs from tape and runs, SunView included.** On a
+MiSTer the core boots the PROM, installs SunOS 4.0 from the release tapes onto
+a disk image (both volumes, every package), and boots that disk multi-user to a
+login and `suntools`. Not there yet: networking, sound (the keyboard bell),
+colour (the cgtwo), and the date (the clock starts in December 1987).
 
 What a user needs:
 
@@ -25,23 +29,52 @@ What a user needs:
   Rev Q PROM image (sha256 `8560ef68…4a3f`, the same image as
   `Inputs/boot0.rom`). It is not in the bitstream. Main_MiSTer loads it at
   start-up, and the machine stays in reset until it has.
-* **A disk image** for the OSD's *SCSI disk (sd0)* entry: a raw image of a
-  Sun SCSI disk, with a label and a SunOS whose fstab names `sd0`. To install
-  SunOS yourself, `tools/mktape --disk sd0.img` writes an empty, labelled
-  Micropolis 1558 (329 MB) to install onto.
-* **A tape image**, to install from, for the OSD's *Tape (st0)* entry: a
-  `.qic` file that `tools/mktape` builds from a SunOS release -- the `.rar` or
-  `.zip` it came in, a folder per volume of numbered files, or SIMH `.tap`
-  files:
+* **A disk image** for the OSD's *SCSI disk (sd0)* entry, and to install onto
+  it, **a tape image** for *Tape (st0)* -- both described below.
 
-      tools/mktape -o sunos-4.0.3-sun2.qic sunos_4.0.3_sun2.rar
+### Disks and tapes
 
-  One image holds every volume; *Tape volume* in the OSD is the cartridge in
-  the drive, and changing it is changing tapes. The drive is an Emulex MT-02
-  QIC controller at SCSI target 4 (`rtl/sun2-common/sun2_mt02.sv`), what
-  SunOS calls `st0`, and it is read only. The PROM boots it with `b st()`;
-  [doc/install-sunos.md](doc/install-sunos.md) is the whole install, step by
-  step, as done on a MiSTer.
+**File names are yours to choose.** *SCSI disk (sd0)* and *Tape (st0)* in the
+OSD open MiSTer's file browser in `games/Sun-2/`; the names in brackets are
+SunOS's devices, not files. A disk must end in `.img` or `.vhd`, a tape in
+`.qic`, and several of each can sit side by side to be swapped from the OSD.
+
+**Tapes.** A `.qic` is a QIC cartridge as blocks: 512-byte blocks in files, and
+a table in block 0 of where each file of each volume starts. `tools/mktape`
+(Python 3, nothing else) builds one from a SunOS release -- a folder per volume
+of the numbered tape files (`tape1/01`, `02`, ...), the `.rar` or `.zip` that
+folder came in (`unrar` or 7-Zip needed for a `.rar`; on Windows WinRAR's own is
+found), or SIMH `.tap` files:
+
+    tools/mktape -o sunos-4.0-sun2.qic   sunos_4.0_sun2/
+    tools/mktape -o sunos-4.0.3-sun2.qic sunos_4.0.3_sun2.rar
+
+One image holds every volume, and *Tape volume* in the OSD is the cartridge in
+the drive: changing it is changing tapes. `-v` lists every file. The drive is
+an Emulex MT-02 QIC controller at SCSI target 4
+(`rtl/sun2-common/sun2_mt02.sv`), SunOS's `st0`, read only; the PROM boots it
+with `b st()`.
+
+**Which tapes.** A full install needs SunOS **4.0** for Sun-2. The common
+**4.0.3** set (700-2157-10) is the *upgrade* release: its miniroot runs only
+`sunupgrade`, so install 4.0 first and upgrade it.
+
+**Disks.** `tools/mktape --disk` writes an empty disk, already labelled, with a
+boot block that says how to install until SunOS replaces it:
+
+    tools/mktape --disk sd0.img                  # Micropolis 1558, 329 MB: / 16, swap 32, /usr 278
+    tools/mktape --disk sd0-1g.img --size 1024   # 1 GiB: / 991 MB and swap 32 MB (--swap MB)
+
+`--size` takes 16 to 1024 MB. **1 GiB is the most a Sun-2 can use**: every
+Sun-2 SCSI driver -- the PROM's, the standalone one, the kernel's -- sends the
+six-byte READ and WRITE, whose block address is 21 bits. A `--size` disk is
+not in SunOS 4.0's `/etc/format.dat`, so `mktape` prints two lines to add to the
+miniroot's copy before running suninstall. Note that 4.0.3's `sunupgrade` needs
+a separate `/usr`: it takes a root-and-swap disk for a dataless client, so
+install on the default layout if you mean to upgrade.
+
+[doc/install-sunos.md](doc/install-sunos.md) is the whole install, step by step,
+as done on a MiSTer, with the 1 GiB variant at the end.
 
 The serial console is the MiSTer UART at 9600 baud. With the frame buffer
 fitted the PROM puts its console on the screen and keyboard, as a real Sun
