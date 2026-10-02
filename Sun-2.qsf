@@ -59,7 +59,7 @@ set_global_assignment -name SEED 1
 #     Sun-2 PROM built with a colour console.  The PROM is NOT in the
 #     bitstream: the user supplies it as games/Sun-2/boot0.rom (32 KiB, the
 #     same image as Inputs/boot0.rom) and Main_MiSTer sends it on ioctl
-#     index 0 at start-up -- loader NOT YET BUILT
+#     index 0 at start-up
 #   Sun VME SCSI board, sd0, on a MiSTer disk image
 #   on-board 1152x900 mono frame buffer, whose control register carries the
 #     colour jumper the PROM reads, and the on-board keyboard/mouse SCC
@@ -79,6 +79,8 @@ set_global_assignment -name VERILOG_MACRO "SUN2_WB_FIFO=1"
 set_global_assignment -name VERILOG_MACRO "SUN2_WB_CACHE=1"
 set_global_assignment -name VERILOG_MACRO "SUN2_CPU_RD68011=1"
 set_global_assignment -name VERILOG_MACRO "SUN2_QUARTUS=1"
+# The PROM comes from boot0.rom at start-up, not from the bitstream (bootrom.v).
+set_global_assignment -name VERILOG_MACRO "SUN2_BOOTROM_LOAD=1"
 
 # `include search path: sun2_config.vh and sun2_attr.vh.
 set_global_assignment -name SEARCH_PATH rtl/sun2-common

@@ -1,15 +1,75 @@
-# Sun-2 FPGA
+# Sun-2 for MiSTer
 
 A replica of a Sun-2 workstation in an FPGA: MC68010, the Sun-2 MMU, the AMD
 9513 timer and Zilog 8530 SCCs for the serial console and keyboard, booting the
-real boot PROMs. Both machine types are supported — the MultiBus Sun 2/120
-(Rev R PROM) and the VME Sun 2/50 (Rev Q) — selected by one define; see
-[Which machine](#which-machine).
+real boot PROMs.
 
-It runs on two FPGA boards from two vendors — a QMTech Wukong (Xilinx Artix-7,
-built with Vivado) and an Arrow DECA (Intel MAX 10, built with Quartus) — from
-one `rtl/` tree that contains no vendor primitive and no vendor IP. Everything
-board-specific lives in `boards/<name>/` and `syn/`.
+This repository is the **MiSTer** port. It builds one machine, a **Sun-2/160**:
+the VME CPU board with its Rev Q boot PROM, the Sun VME SCSI board, the
+on-board 1152×900 mono frame buffer, keyboard, mouse and 82586, and the RD68011
+CPU core at 20 MHz. A `cgtwo` colour board is next. The machine is fixed in
+`Sun-2.qsf`'s macro block. The replica it is ported from also ran on a QMTech
+Wukong and an Arrow DECA; those board flows have been removed from this tree
+and remain in its git history. Most of what follows describes that work, and
+still describes the machine.
+
+## MiSTer
+
+**Status: builds are being brought up; nothing has run on a MiSTer yet.**
+
+What a user needs:
+
+* **A MiSTer with an SDRAM board** (32 MB or more). Main memory and the mono
+  frame buffer live there.
+* **The boot PROM**, as `games/Sun-2/boot0.rom`: the 32 KiB Sun-2/50 / 2/160
+  Rev Q PROM image (sha256 `8560ef68…4a3f`, the same image as
+  `Inputs/boot0.rom`). It is not in the bitstream. Main_MiSTer loads it at
+  start-up, and the machine stays in reset until it has.
+* **A disk image** for the OSD's *SCSI disk (sd0)* entry: a raw image of a
+  Sun SCSI disk, with a label and a SunOS whose fstab names `sd0`.
+
+The serial console is the MiSTer UART at 9600 baud. With the frame buffer
+fitted the PROM puts its console on the screen and keyboard, as a real Sun
+does.
+
+### The keyboard
+
+A PC keyboard stands in for the Sun's (`rtl/sun2_mister_kbd_mouse.sv`). The
+main block is where you would expect it; the Sun's extra keys are here. The
+left block's names are the legends Sun printed on its later keyboards; a Sun-2
+keyboard calls them L1..L10.
+
+| PC | Sun |
+|---|---|
+| **Right Alt + F1** | **L1 Stop** -- Right Alt+F1, then A, is the abort to the monitor |
+| Right Alt + F2 .. F10 | L2 Again, L3 Props, L4 Undo, L5 Front, L6 Copy, L7 Open, L8 Paste, L9 Find, L10 Cut |
+| F1 .. F9 | the top row, T1 .. T9 |
+| arrows | R8, R10, R12, R14 |
+| Home, PgUp, End, PgDn | R7, R9, R13, R15 |
+| numeric keypad 1 .. 9 | the right keypad, R13 .. R9 by position |
+| Num Lock, keypad / * - + | R1, R2, R3, R4, R5 |
+| Insert / keypad 0, Delete / keypad . | Insert, Delete |
+| keypad Enter | Line Feed |
+| Windows keys | Meta, the Sun-2's "Left" and "Right" |
+| Left Alt, Caps Lock | Alt, Caps Lock |
+
+Right Alt sends nothing itself. An F-key keeps the meaning it went down with,
+so releasing Right Alt first cannot leave an L-key held. Scroll Lock and F12
+are MiSTer's own (keyboard emulation and the OSD) and are not passed on.
+
+Building: open `Sun-2.qpf` in Quartus Prime Lite 17.0 (the version MiSTer's
+framework supports) and compile. Nothing else is needed: no submodules, no
+generated sources.
+
+| path | what |
+|---|---|
+| `Sun-2.sv` | the MiSTer `emu` top: clocks, `hps_io`, the bridges, the machine |
+| `rtl/sun2-common/`, `rtl/sun2-vme/` | the machine |
+| `rtl/vendor/` | third-party cores, copied in unmodified; see its README |
+| `rtl/sun2_mister_*.sv`, `rtl/sdram.sv`, `rtl/pll*.v` | the MiSTer glue |
+| `sys/` | Template_MiSTer's framework, verbatim |
+| `doc/prom/` | an annotated disassembly of the boot PROM |
+| `tb/verilator/` | unit tests for the MiSTer glue: `make -C tb/verilator` (Verilator 5) |
 
 ## What it does
 

@@ -13,6 +13,13 @@ module top(input         cpu_clk,
 	   output 	 kbm_txda,
 	   input 	 kbm_rxdb,
 	   output 	 kbm_txdb,
+`ifdef SUN2_BOOTROM_LOAD
+	   /* the boot PROM's write port -- see bootrom.v */
+	   input 	 rom_wr_clk,
+	   input 	 rom_wr_en,
+	   input [13:0]  rom_wr_addr,
+	   input [15:0]  rom_wr_data,
+`endif
 
 	   /* debug */
 	   output [7:0]  diag_leds,
@@ -279,6 +286,10 @@ module top(input         cpu_clk,
 		  .kbm_txda(kbm_txda),
 		  .kbm_rxdb(kbm_rxdb),
 		  .kbm_txdb(kbm_txdb),
+`ifdef SUN2_BOOTROM_LOAD
+		  .rom_wr_clk(rom_wr_clk), .rom_wr_en(rom_wr_en),
+		  .rom_wr_addr(rom_wr_addr), .rom_wr_data(rom_wr_data),
+`endif
 
 		  .EN_DVMA_o(EN_DVMA),
 		  .ether_core_reset_n(ether_core_reset_n),

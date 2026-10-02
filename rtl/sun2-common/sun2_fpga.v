@@ -39,6 +39,14 @@ module sun2_fpga(input         cpu_clk,
 		 output        kbm_txda,
 		 input 	       kbm_rxdb,
 		 output        kbm_txdb,
+`ifdef SUN2_BOOTROM_LOAD
+		 /* the boot PROM's write port, when it is loaded rather than
+		  compiled in -- see bootrom.v */
+		 input 	       rom_wr_clk,
+		 input 	       rom_wr_en,
+		 input [13:0]  rom_wr_addr,
+		 input [15:0]  rom_wr_data,
+`endif
 		 /* DVMA and on-board Ethernet.  The controller and its bus
 		  master live in top_fpga, because that is where the CPU bus is
 		  muxed; what belongs here is the control register in device
@@ -973,6 +981,10 @@ module sun2_fpga(input         cpu_clk,
    bootrom bootrom(.CLK(CLK),
 		   .idx(P_A[14:1]),
 		   .dout(prom_out)
+`ifdef SUN2_BOOTROM_LOAD
+		   , .wr_clk(rom_wr_clk), .wr_en(rom_wr_en),
+		   .wr_addr(rom_wr_addr), .wr_data(rom_wr_data)
+`endif
 		   );
 
    // match wire for devices

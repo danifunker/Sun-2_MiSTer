@@ -88,3 +88,6 @@ c5_pin_model_dump.txt
 *_netlist
 *.cdf
 **/.DS_Store
+
+# Verilator unit-test builds
+tb/verilator/obj_*/

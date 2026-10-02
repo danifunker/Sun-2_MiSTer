@@ -1,19 +1,23 @@
 //============================================================================
-//  Sun-2 Workstation Replica for MiSTer
+//  Sun-2/160 for MiSTer
 //
-//  Top-level emu module adapting the Sun-2 FPGA architecture to the MiSTer
-//  hardware platform.
+//  The emu module: the MiSTer framework (sys/) on one side, the Sun-2 machine
+//  (rtl/sun2-common/top_fpga.v) on the other, and the board-level pieces that
+//  join them.  The machine is fixed by Sun-2.qsf's macro block: a VME Sun-2
+//  with its Rev Q boot PROM, the VME SCSI board, the on-board mono frame
+//  buffer, keyboard/mouse SCC and 82586.
 //
-//  Features:
-//  - Motorola 68010 CPU via RD68011 core
-//  - Sun-2 custom MMU with Contexts, Segment Map, and Page Map
-//  - SDR SDRAM controller with 128-bit cache line support & Framebuffer scanout
-//  - 1152x900 1-bit Monochrome Framebuffer centered in 1280x1024 VESA DMT @ 60Hz
-//  - Xylogics 450 SMD Hard Disk Controller bridged to MiSTer VHD / SD card
-//  - Dual Z8530 SCC: Port A = Console / Keyboard, Port B = Mouse
-//  - PS/2 Keyboard & Mouse translation to Sun Type 4 serial (TEMLIB mapping)
-//  - Am9513 System Timing Controller & MM58167 Real-Time Clock
-//  - Native MiSTer OSD, UART console redirection, and reset sequencing
+//  Clocks (rtl/pll.v, rtl/pll_serial.v)
+//    clk_mem   100.000 MHz  SDRAM, the memory side of the Wishbone bridge, hps_io
+//    cpu_clk    20.000 MHz  the machine, its block seam and the keyboard/mouse bridge
+//    clk_pix    83.333 MHz  the raster
+//    clk_mii    25.000 MHz  the 82586's MII clocks; nothing is on the wire
+//    clk_ser     4.9152 MHz the SCCs, the Am9513 and the MM58167
+//
+//  Memory: 8 MiB of main memory and the 128 KiB frame buffer on the SDRAM
+//  board, behind rtl/sun2_mister_sdram.sv.  The boot PROM is not in the
+//  bitstream: it is games/Sun-2/boot0.rom, which Main_MiSTer sends on ioctl
+//  index 0 at start-up, and the machine stays in reset until it has arrived.
 //============================================================================
 
 `timescale 1ns / 1ps
@@ -23,12 +27,10 @@ module emu
     `include "sys/emu_ports.vh"
 );
 
-    // =========================================================================
-    // Default values for ports not used in this core
-    // =========================================================================
-    assign ADC_BUS     = 'Z;
-    assign USER_OUT    = '1;
-    assign UART_DTR    = UART_DSR;
+    // ---- what this core does not use ------------------------------------------
+    assign ADC_BUS  = 'Z;
+    assign USER_OUT = '1;
+    assign {UART_RTS, UART_DTR} = 2'b00;
     assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
     assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
 
@@ -36,9 +38,8 @@ module emu
     assign VGA_F1      = 1'b0;
     assign VGA_SCALER  = 1'b0;
     assign VGA_DISABLE = 1'b0;
-
-    assign HDMI_FREEZE   = 1'b0;
-    assign HDMI_BLACKOUT = 1'b0;
+    assign HDMI_FREEZE    = 1'b0;
+    assign HDMI_BLACKOUT  = 1'b0;
     assign HDMI_BOB_DEINT = 1'b0;
 
     assign AUDIO_S   = 1'b0;
@@ -47,110 +48,59 @@ module emu
     assign AUDIO_R   = 16'd0;
 
     assign BUTTONS   = 2'b00;
+    assign LED_POWER = 2'b00;
 
-    // =========================================================================
-    // MiSTer OSD Configuration String
-    // =========================================================================
+    // ---- the OSD ---------------------------------------------------------------
+    // status[0] is the reset item and nothing else; the options start at 1.
     `include "build_id.v"
-
     localparam CONF_STR = {
-        "Sun-2;UART9600:19200:38400:1200;",
+        "Sun-2;UART9600;",
+        "S0,IMGVHD,SCSI disk (sd0);",
         "-;",
-        "S0,IMGVHD,Disk (xy0);",
-        "-;",
-        "O[1:0],Aspect ratio,5:4 (1280x1024),4:3,Original 1152x900;",
-        "O[2],Boot PROM,Fastboot,Normal;",
+        "O[2:1],Aspect ratio,Original,Full Screen,4:3;",
         "-;",
         "R0,Reset;",
-        "V,v1.0.", `BUILD_DATE
+        "V,v",`BUILD_DATE
     };
 
     wire [127:0] status;
     wire [1:0]   buttons;
 
-    // Aspect ratio configuration
-    // 0: 5:4 (1280x1024 VESA DMT)
-    // 1: 4:3
-    // 2: Original 1152x900
-    wire [1:0] ar = status[1:0];
-    assign VIDEO_ARX = (ar == 2'd0) ? 13'd5 : (ar == 2'd1) ? 13'd4 : 13'd1152;
-    assign VIDEO_ARY = (ar == 2'd0) ? 13'd4 : (ar == 2'd1) ? 13'd3 : 13'd900;
+    // The raster is 1160x904 (the 1152x900 screen and a small border, which
+    // fb_scanout needs for its prefetch) of square pixels.
+    wire [1:0] ar = status[2:1];
+    assign VIDEO_ARX = (ar == 2'd0) ? 13'd1160 : (ar == 2'd2) ? 13'd4 : 13'd0;
+    assign VIDEO_ARY = (ar == 2'd0) ? 13'd904  : (ar == 2'd2) ? 13'd3 : 13'd0;
 
-    // =========================================================================
-    // Clocks
-    // =========================================================================
-    wire clk_pixel;   // 108.0 MHz (VESA DMT 1280x1024 @ 60Hz)
-    wire clk_mem;     // 64.0 MHz (SDRAM and Wishbone FIFO)
-    wire clk40;       // 40.0 MHz (Keyboard/Mouse UART reference)
-    wire cpu_clk;     // 16.67 MHz (Sun-2 CPU clock)
-    wire clk4m9152;   // 4.9152 MHz (SCC and RTC clock)
-    wire pll_locked;
+    // ---- clocks ------------------------------------------------------------------
+    wire clk_mem, cpu_clk, clk_pix, clk_mii, clk_ser;
+    wire locked_main, locked_ser;
 
-    pll pll_inst (
+    pll pll (
         .refclk   (CLK_50M),
         .rst      (1'b0),
-        .outclk_0 (clk_pixel),
-        .outclk_1 (clk_mem),
-        .outclk_2 (clk40),
-        .outclk_3 (cpu_clk),
-        .outclk_4 (clk4m9152),
-        .locked   (pll_locked)
+        .outclk_0 (clk_mem),
+        .outclk_1 (cpu_clk),
+        .outclk_2 (clk_pix),
+        .outclk_3 (clk_mii),
+        .locked   (locked_main)
     );
 
-    // =========================================================================
-    // Reset Sequencing
-    // =========================================================================
-    wire user_reset = status[0] | buttons[1] | RESET;
-    reg  [7:0] rst_hold = 8'hFF;
-    reg        sdram_init_done = 1'b0;
-
-    always @(posedge clk_mem) begin
-        if (!pll_locked) begin
-            rst_hold        <= 8'hFF;
-            sdram_init_done <= 1'b0;
-        end else if (rst_hold != 8'h00) begin
-            rst_hold <= rst_hold - 8'd1;
-        end else begin
-            sdram_init_done <= 1'b1;
-        end
-    end
-
-    wire sys_reset_raw = user_reset | !pll_locked | (rst_hold != 8'h00);
-
-    // Synchronize resets to their respective clock domains
-    wire sys_reset_cpu;
-    reset_sync rst_sync_cpu (
-        .clk          (cpu_clk),
-        .rst_async_in (sys_reset_raw),
-        .rst_sync_out (sys_reset_cpu)
+    pll_serial pll_serial (
+        .refclk   (CLK_50M),
+        .rst      (1'b0),
+        .outclk_0 (clk_ser),
+        .locked   (locked_ser)
     );
 
-    wire sys_reset_mem;
-    reset_sync rst_sync_mem (
-        .clk          (clk_mem),
-        .rst_async_in (sys_reset_raw),
-        .rst_sync_out (sys_reset_mem)
-    );
+    wire locked = locked_main & locked_ser;
 
-    wire sys_reset_pix;
-    reset_sync rst_sync_pix (
-        .clk          (clk_pixel),
-        .rst_async_in (sys_reset_raw),
-        .rst_sync_out (sys_reset_pix)
-    );
-
-    // =========================================================================
-    // HPS IO (MiSTer Framework)
-    // =========================================================================
-    wire forced_scandoubler;
+    // ---- hps_io --------------------------------------------------------------------
     wire [10:0] ps2_key;
     wire [24:0] ps2_mouse;
 
-    // SD Card / VHD Block interface
     wire [31:0] sd_lba[1];
-    wire [0:0]  sd_rd;
-    wire [0:0]  sd_wr;
-    wire [0:0]  sd_ack;
+    wire [0:0]  sd_rd, sd_wr, sd_ack;
     wire [13:0] sd_buff_addr;
     wire [7:0]  sd_buff_dout;
     wire [7:0]  sd_buff_din[1];
@@ -158,94 +108,109 @@ module emu
     wire [0:0]  img_mounted;
     wire [63:0] img_size;
 
-    hps_io #(
-        .CONF_STR (CONF_STR),
-        .VDNUM    (1)
-    ) hps_io_inst (
-        .clk_sys         (clk_mem),
-        .HPS_BUS         (HPS_BUS),
-        .EXT_BUS         (),
-        .gamma_bus       (),
+    wire        ioctl_download;
+    wire [15:0] ioctl_index;
+    wire        ioctl_wr;
+    wire [26:0] ioctl_addr;
+    wire [7:0]  ioctl_dout;
 
-        .forced_scandoubler (forced_scandoubler),
+    hps_io #(.CONF_STR(CONF_STR), .VDNUM(1)) hps_io (
+        .clk_sys        (clk_mem),
+        .HPS_BUS        (HPS_BUS),
+        .EXT_BUS        (),
 
-        .sd_lba          (sd_lba),
-        .sd_blk_cnt      (),
-        .sd_rd           (sd_rd),
-        .sd_wr           (sd_wr),
-        .sd_ack          (sd_ack),
-        .sd_buff_addr    (sd_buff_addr),
-        .sd_buff_dout    (sd_buff_dout),
-        .sd_buff_din     (sd_buff_din),
-        .sd_buff_wr      (sd_buff_wr),
-        .img_mounted     (img_mounted),
-        .img_readonly    (),
-        .img_size        (img_size),
+        .buttons        (buttons),
+        .status         (status),
+        .status_menumask(16'd0),
 
-        .TIMESTAMP       (),
-        .buttons         (buttons),
-        .status          (status),
-        .status_menumask (16'd0),
-        .status_in       (128'd0),
-        .status_set      (1'b0),
+        .ps2_key        (ps2_key),
+        .ps2_mouse      (ps2_mouse),
 
-        .ps2_key         (ps2_key),
-        .ps2_mouse       (ps2_mouse),
+        .sd_lba         (sd_lba),
+        .sd_rd          (sd_rd),
+        .sd_wr          (sd_wr),
+        .sd_ack         (sd_ack),
+        .sd_buff_addr   (sd_buff_addr),
+        .sd_buff_dout   (sd_buff_dout),
+        .sd_buff_din    (sd_buff_din),
+        .sd_buff_wr     (sd_buff_wr),
+        .img_mounted    (img_mounted),
+        .img_readonly   (),
+        .img_size       (img_size),
 
-        .ps2_kbd_led_status (3'b000),
-        .ps2_kbd_led_use    (3'b000)
+        .ioctl_download (ioctl_download),
+        .ioctl_index    (ioctl_index),
+        .ioctl_wr       (ioctl_wr),
+        .ioctl_addr     (ioctl_addr),
+        .ioctl_dout     (ioctl_dout),
+        .ioctl_wait     (1'b0)
     );
 
-    // =========================================================================
-    // Keyboard & Mouse Translation (TEMLIB mapping -> Sun Type 4 Serial)
-    // =========================================================================
-    wire kbd_ser_tx;
-    wire kbd_ser_rx;
-    wire mouse_ser_tx;
+    // ---- the boot PROM, from boot0.rom ---------------------------------------------
+    // 32 KiB, big-endian 16-bit words: the even byte is the high half.  The
+    // machine is held in reset until a whole image has been received.
+    reg        rom_wr_en   = 1'b0;
+    reg [13:0] rom_wr_addr = 14'd0;
+    reg [15:0] rom_wr_data = 16'h0;
+    reg [7:0]  rom_hi      = 8'h0;
+    reg        rom_loading = 1'b0;
+    reg        rom_loaded  = 1'b0;
 
-    sun2_mister_kbd_mouse #(
-        .CLK_HZ (40_000_000)
-    ) kbd_mouse_inst (
-        .clk          (clk40),
-        .rst          (sys_reset_cpu),
+    always @(posedge clk_mem) begin
+        rom_wr_en <= 1'b0;
+        if (ioctl_download && ioctl_index[7:0] == 8'd0) begin       // boot0.rom; boot1.rom would be 64
+            rom_loading <= 1'b1;
+            rom_loaded  <= 1'b0;
+            if (ioctl_wr && ioctl_addr < 27'd32768) begin
+                if (!ioctl_addr[0])
+                    rom_hi <= ioctl_dout;
+                else begin
+                    rom_wr_en   <= 1'b1;
+                    rom_wr_addr <= ioctl_addr[14:1];
+                    rom_wr_data <= {rom_hi, ioctl_dout};
+                end
+            end
+        end else if (rom_loading) begin
+            rom_loading <= 1'b0;
+            rom_loaded  <= 1'b1;
+        end
+    end
+
+    // ---- resets -----------------------------------------------------------------------
+    // The machine: the OSD's reset, the framework's, an unlocked PLL, or no PROM yet.
+    wire machine_reset_raw = status[0] | buttons[1] | RESET | ~locked | ~rom_loaded;
+
+    wire reset_cpu;
+    reset_sync rst_cpu (.clk(cpu_clk), .rst_async_in(machine_reset_raw), .rst_sync_out(reset_cpu));
+
+    // Memory and video restart only when the clocks do: a machine reset must
+    // not lose the SDRAM's contents or blank the screen.
+    wire reset_mem, reset_pix;
+    reset_sync rst_mem (.clk(clk_mem), .rst_async_in(~locked), .rst_sync_out(reset_mem));
+    reset_sync rst_pix (.clk(clk_pix), .rst_async_in(~locked), .rst_sync_out(reset_pix));
+
+    // ---- keyboard and mouse ---------------------------------------------------------
+    wire kbm_rxda, kbm_txda, kbm_rxdb;
+
+    sun2_mister_kbd_mouse #(.CLK_HZ(20_000_000)) kbd_mouse (
+        .clk          (cpu_clk),
+        .rst          (reset_cpu),
         .ps2_key      (ps2_key),
         .ps2_mouse    (ps2_mouse),
-        .kbd_ser_tx   (kbd_ser_tx),
-        .kbd_ser_rx   (kbd_ser_rx),
-        .mouse_ser_tx (mouse_ser_tx),
-        .bell         (),
-        .leds         ()
+        .kbd_ser_tx   (kbm_rxda),
+        .kbd_ser_rx   (kbm_txda),
+        .mouse_ser_tx (kbm_rxdb),
+        .bell         ()
     );
 
-    // =========================================================================
-    // Block Interface Bridge (MiSTer VHD <-> Sun-2 Xylogics 450)
-    // =========================================================================
-    wire        blk_start;
-    wire        blk_we;
-    wire [31:0] blk_lba;
-    wire [7:0]  blk_buf_rdata;
-    wire        blk_done;
-    wire        blk_err;
-    wire        blk_ready;
-    wire [31:0] blk_count;
-    wire        blk_buf_we;
+    // ---- the disk ----------------------------------------------------------------------
+    wire        blk_start, blk_we, blk_done, blk_err, blk_ready, blk_buf_we, blk_busy;
+    wire [31:0] blk_lba, blk_count;
+    wire [7:0]  blk_buf_rdata, blk_buf_wdata;
     wire [8:0]  blk_buf_addr;
-    wire [7:0]  blk_buf_wdata;
 
-    wire [31:0] blk_bridge_sd_lba;
-    wire        blk_bridge_sd_rd;
-    wire        blk_bridge_sd_wr;
-    wire [7:0]  blk_bridge_sd_buff_din;
-
-    assign sd_lba[0]       = blk_bridge_sd_lba;
-    assign sd_rd[0]        = blk_bridge_sd_rd;
-    assign sd_wr[0]        = blk_bridge_sd_wr;
-    assign sd_buff_din[0]  = blk_bridge_sd_buff_din;
-
-    sun2_mister_block blk_bridge_inst (
+    sun2_mister_block disk (
         .clk           (cpu_clk),
-        .rst           (sys_reset_cpu),
-
         .blk_start     (blk_start),
         .blk_we        (blk_we),
         .blk_lba       (blk_lba),
@@ -257,127 +222,113 @@ module emu
         .blk_buf_we    (blk_buf_we),
         .blk_buf_addr  (blk_buf_addr),
         .blk_buf_wdata (blk_buf_wdata),
+        .busy          (blk_busy),
 
-        .sd_lba        (blk_bridge_sd_lba),
-        .sd_rd         (blk_bridge_sd_rd),
-        .sd_wr         (blk_bridge_sd_wr),
+        .clk_hps       (clk_mem),
+        .sd_lba        (sd_lba[0]),
+        .sd_rd         (sd_rd[0]),
+        .sd_wr         (sd_wr[0]),
         .sd_ack        (sd_ack[0]),
         .sd_buff_addr  (sd_buff_addr[8:0]),
         .sd_buff_dout  (sd_buff_dout),
-        .sd_buff_din   (blk_bridge_sd_buff_din),
+        .sd_buff_din   (sd_buff_din[0]),
         .sd_buff_wr    (sd_buff_wr),
         .img_mounted   (img_mounted[0]),
         .img_size      (img_size)
     );
 
-    // =========================================================================
-    // Wishbone Memory & Frame Buffer Scanout via SDRAM
-    // =========================================================================
-    wire        wb_cyc;
-    wire        wb_stb;
-    wire [29:0] wb_adr;
-    wire [31:0] wb_dat_m2s;
-    wire [3:0]  wb_sel;
-    wire        wb_we;
-    wire [31:0] wb_dat_s2m;
-    wire        wb_ack;
-    wire [127:0] wb_line_s2m;
+    // ---- memory -------------------------------------------------------------------------
+    wire         wb_cyc, wb_stb, wb_we, wb_ack;
+    wire [29:0]  wb_adr;
+    wire [31:0]  wb_dat_m2s, wb_dat_s2m;
+    wire [3:0]   wb_sel;
+    wire [127:0] wb_line;
 
     wire [27:0]  fb_c_addr;
-    wire         fb_c_req;
-    wire         fb_c_done;
+    wire         fb_c_req, fb_c_done;
     wire [127:0] fb_c_rdata;
 
-    sun2_mister_sdram #(
-        .FB_WB_BASE            (30'h03E00000),
-        .FB_SDRAM_WORD_OFFSET  (26'h0800000)
-    ) sdram_controller (
-        .clk_mem        (clk_mem),
-        .clk_sys        (cpu_clk),
-        .rst            (sys_reset_mem),
-        .sdram_init     (!pll_locked),
+    sun2_mister_sdram sdram (
+        .clk        (clk_mem),
+        .init       (reset_mem),
 
-        .wb_cyc_i       (wb_cyc),
-        .wb_stb_i       (wb_stb),
-        .wb_adr_i       (wb_adr),
-        .wb_dat_i       (wb_dat_m2s),
-        .wb_sel_i       (wb_sel),
-        .wb_we_i        (wb_we),
-        .wb_dat_o       (wb_dat_s2m),
-        .wb_ack_o       (wb_ack),
-        .wb_line_o      (wb_line_s2m),
+        .wb_cyc_i   (wb_cyc),
+        .wb_stb_i   (wb_stb),
+        .wb_adr_i   (wb_adr),
+        .wb_dat_i   (wb_dat_m2s),
+        .wb_sel_i   (wb_sel),
+        .wb_we_i    (wb_we),
+        .wb_dat_o   (wb_dat_s2m),
+        .wb_ack_o   (wb_ack),
+        .wb_line_o  (wb_line),
 
-        .fb_c_addr      (fb_c_addr),
-        .fb_c_req       (fb_c_req),
-        .fb_c_done      (fb_c_done),
-        .fb_c_rdata     (fb_c_rdata),
+        .fb_c_addr  (fb_c_addr),
+        .fb_c_req   (fb_c_req),
+        .fb_c_done  (fb_c_done),
+        .fb_c_rdata (fb_c_rdata),
 
-        .SDRAM_CLK      (SDRAM_CLK),
-        .SDRAM_CKE      (SDRAM_CKE),
-        .SDRAM_nCS      (SDRAM_nCS),
-        .SDRAM_nRAS     (SDRAM_nRAS),
-        .SDRAM_nCAS     (SDRAM_nCAS),
-        .SDRAM_nWE      (SDRAM_nWE),
-        .SDRAM_BA       (SDRAM_BA),
-        .SDRAM_A        (SDRAM_A),
-        .SDRAM_DQ       (SDRAM_DQ),
-        .SDRAM_DQML     (SDRAM_DQML),
-        .SDRAM_DQMH     (SDRAM_DQMH)
+        .SDRAM_DQ   (SDRAM_DQ),
+        .SDRAM_A    (SDRAM_A),
+        .SDRAM_DQML (SDRAM_DQML),
+        .SDRAM_DQMH (SDRAM_DQMH),
+        .SDRAM_BA   (SDRAM_BA),
+        .SDRAM_nCS  (SDRAM_nCS),
+        .SDRAM_nWE  (SDRAM_nWE),
+        .SDRAM_nRAS (SDRAM_nRAS),
+        .SDRAM_nCAS (SDRAM_nCAS),
+        .SDRAM_CKE  (SDRAM_CKE),
+        .SDRAM_CLK  (SDRAM_CLK)
     );
 
-    // =========================================================================
-    // Sun-2 Machine Core
-    // =========================================================================
+    // ---- the machine ----------------------------------------------------------------------
     wire       fb_video_en;
-    wire [7:0] diag_leds;
-    wire [7:0] todebug;
-    wire       en_boot;
-    wire       eth_crs_stuck;
+    wire [7:0] diag_leds, todebug;
 
     top machine (
         .cpu_clk        (cpu_clk),
-        .clk40          (clk40),
-        .clk4m9152      (clk4m9152),
-        .sys_reset      (sys_reset_cpu),
+        .clk40          (cpu_clk),          // used only under CPU_CLK_MULTIPLE_SERIAL
+        .clk4m9152      (clk_ser),
+        .sys_reset      (reset_cpu),
 
-        // Serial console
         .tx             (UART_TXD),
         .rx             (UART_RXD),
-
-        // Serial Keyboard and Mouse
-        .kbm_rxda       (kbd_ser_tx),
-        .kbm_txda       (kbd_ser_rx),
-        .kbm_rxdb       (mouse_ser_tx),
+        .kbm_rxda       (kbm_rxda),
+        .kbm_txda       (kbm_txda),
+        .kbm_rxdb       (kbm_rxdb),
         .kbm_txdb       (),
 
-        // Debug & status
+        .rom_wr_clk     (clk_mem),
+        .rom_wr_en      (rom_wr_en),
+        .rom_wr_addr    (rom_wr_addr),
+        .rom_wr_data    (rom_wr_data),
+
         .diag_leds      (diag_leds),
-        .en_boot        (en_boot),
+        .en_boot        (),
         .todebug        (todebug),
-        .eth_crs_stuck  (eth_crs_stuck),
+        .eth_crs_stuck  (),
         .fb_video_en    (fb_video_en),
 
-        // PHY interface (tied off)
+        // No PHY: status reads back as absent.
         .phy_id         (16'd0),
         .phy_present    (1'b0),
         .phy_cfg_done   (1'b1),
         .phy_link       (1'b0),
-        .phy_fd         (1'b1),
-        .phy_speed      (2'b01),
+        .phy_fd         (1'b0),
+        .phy_speed      (2'b00),
 
-        // MII interface (tied off)
-        .mii_tx_clk     (1'b0),
+        // MII clocks run, so the 82586 transmits into nothing and its
+        // driver sees a quiet wire, not a dead chip.
+        .mii_tx_clk     (clk_mii),
         .mii_txd        (),
         .mii_tx_en      (),
         .mii_tx_er      (),
-        .mii_rx_clk     (1'b0),
+        .mii_rx_clk     (clk_mii),
         .mii_rxd        (4'd0),
         .mii_rx_dv      (1'b0),
         .mii_rx_er      (1'b0),
         .mii_crs        (1'b0),
         .mii_col        (1'b0),
 
-        // Block media interface (Xylogics 450)
         .blk_start      (blk_start),
         .blk_we         (blk_we),
         .blk_lba        (blk_lba),
@@ -390,7 +341,6 @@ module emu
         .blk_buf_addr   (blk_buf_addr),
         .blk_buf_wdata  (blk_buf_wdata),
 
-        // Wishbone interface
         .wb_cyc_o       (wb_cyc),
         .wb_stb_o       (wb_stb),
         .wb_adr_o       (wb_adr),
@@ -400,80 +350,62 @@ module emu
         .wb_dat_i       (wb_dat_s2m),
         .wb_ack_i       (wb_ack),
         .wb_clk_i       (clk_mem),
-        .wb_rst_i       (sys_reset_mem),
-        .wb_line_i      (wb_line_s2m)
+        .wb_rst_i       (reset_mem),
+        .wb_line_i      (wb_line)
     );
 
-    // =========================================================================
-    // Video Timing & Framebuffer Scanout
-    // =========================================================================
+    // ---- video --------------------------------------------------------------------------
+    // 1160x904 active in a 1472x937 total at 83.333 MHz: 60.4 Hz.  fb_scanout
+    // centres the 1152x900 screen in it, a 4-pixel and 2-line border.
     wire [11:0] cx;
     wire [10:0] cy;
-    wire        vde;
-    wire        hsync;
-    wire        vsync;
+    wire        de, hs, vs;
     wire [23:0] rgb;
 
     video_timing #(
-        .H_ACTIVE   (1280),
-        .H_FRONT    (48),
-        .H_SYNC     (112),
-        .H_TOTAL    (1688),
-        .V_ACTIVE   (1024),
-        .V_FRONT    (1),
-        .V_SYNC     (3),
-        .V_TOTAL    (1066),
-        .H_POSITIVE (1'b1),
-        .V_POSITIVE (1'b1),
-        .CXW        (12),
-        .CYW        (11)
-    ) timing_inst (
-        .clk        (clk_pixel),
-        .rst        (sys_reset_pix),
-        .cx         (cx),
-        .cy         (cy),
-        .de         (vde),
-        .hsync      (hsync),
-        .vsync      (vsync)
+        .H_ACTIVE(1160), .H_FRONT(24), .H_SYNC(128), .H_TOTAL(1472),
+        .V_ACTIVE(904),  .V_FRONT(3),  .V_SYNC(4),   .V_TOTAL(937),
+        .H_POSITIVE(1'b0), .V_POSITIVE(1'b0),
+        .CXW(12), .CYW(11)
+    ) timing (
+        .clk(clk_pix), .rst(reset_pix),
+        .cx(cx), .cy(cy), .de(de), .hsync(hs), .vsync(vs)
     );
 
     fb_scanout #(
-        .FB_APP_BASE (28'h0000000),
+        .FB_APP_BASE (28'h0000000),         // sun2_mister_sdram adds the frame buffer's offset
         .FB_W        (1152),
         .FB_H        (900),
-        .SCREEN_W    (1280),
-        .SCREEN_H    (1024)
-    ) fb_scanout_inst (
-        .ui_clk      (clk_mem),
-        .ui_rst      (sys_reset_mem),
-        .c_addr      (fb_c_addr),
-        .c_req       (fb_c_req),
-        .c_done      (fb_c_done),
-        .c_rdata     (fb_c_rdata),
-
-        .clk_pixel   (clk_pixel),
-        .pix_rst     (sys_reset_pix),
-        .cx          (cx),
-        .cy          (cy),
-        .video_en    (fb_video_en),
-        .rgb         (rgb)
+        .SCREEN_W    (1160),
+        .SCREEN_H    (904)
+    ) scanout (
+        .ui_clk    (clk_mem),
+        .ui_rst    (reset_mem),
+        .c_addr    (fb_c_addr),
+        .c_req     (fb_c_req),
+        .c_done    (fb_c_done),
+        .c_rdata   (fb_c_rdata),
+        .clk_pixel (clk_pix),
+        .pix_rst   (reset_pix),
+        .cx        (cx),
+        .cy        (cy),
+        .video_en  (fb_video_en),
+        .rgb       (rgb)
     );
 
-    // Assign Video to MiSTer Scaler / HDMI / VGA
-    assign CLK_VIDEO = clk_pixel;
+    assign CLK_VIDEO = clk_pix;
     assign CE_PIXEL  = 1'b1;
     assign VGA_R     = rgb[23:16];
     assign VGA_G     = rgb[15:8];
     assign VGA_B     = rgb[7:0];
-    assign VGA_HS    = hsync;
-    assign VGA_VS    = vsync;
-    assign VGA_DE    = vde;
+    assign VGA_HS    = hs;
+    assign VGA_VS    = vs;
+    assign VGA_DE    = de;
 
-    // =========================================================================
-    // Front Panel LEDs
-    // =========================================================================
-    assign LED_USER  = ~pll_locked | sys_reset_cpu;
-    assign LED_POWER = 2'b00;
-    assign LED_DISK  = {blk_start, 1'b0};
+    // ---- LEDs ---------------------------------------------------------------------------
+    // User: the machine is in reset (no PROM yet, or the OSD's reset).
+    // Disk: the SCSI target is moving a block, ORed with the HPS's own activity.
+    assign LED_USER = reset_cpu;
+    assign LED_DISK = {1'b0, blk_busy};
 
 endmodule

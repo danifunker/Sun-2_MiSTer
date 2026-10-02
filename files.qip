@@ -90,11 +90,10 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-common/fb_scanout.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-common/reset_sync.sv
 
 # ---- MiSTer glue ----------------------------------------------------------------
-# TODO: rtl/pll.v is a hand-written placeholder and cannot be implemented (see
-# the review).  It is to be replaced by IP-generated PLLs -- rtl/pll.qip and
-# rtl/pll/, which sys/pll_q17.qip already expects -- and dropped from here.
-set_global_assignment -name VERILOG_FILE rtl/pll.v
-set_global_assignment -name VERILOG_FILE rtl/sdram.v
+# The main PLL (rtl/pll.qip) is pulled in by sys/pll_q17.qip, as the framework
+# expects; the serial-clock PLL is this core's own.
+set_global_assignment -name QIP_FILE rtl/pll_serial.qip
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_block.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_kbd_mouse.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_sdram.sv

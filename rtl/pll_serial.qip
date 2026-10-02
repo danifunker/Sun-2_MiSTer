@@ -1,0 +1,10 @@
+# The serial-clock PLL (rtl/pll_serial.v), listed in files.qip.
+set_global_assignment -entity "pll_serial" -library "pll_serial" -name IP_TOOL_NAME "altera_pll"
+set_global_assignment -entity "pll_serial" -library "pll_serial" -name IP_TOOL_VERSION "17.0"
+set_global_assignment -entity "pll_serial" -library "pll_serial" -name IP_TARGETED_DEVICE_FAMILY "Cyclone V"
+set_global_assignment -name SYNTHESIS_ONLY_QIP ON
+set_global_assignment -library "pll_serial" -name VERILOG_FILE [file join $::quartus(qip_path) "pll_serial.v"]
+set_global_assignment -library "pll_serial" -name VERILOG_FILE [file join $::quartus(qip_path) "pll_serial/pll_serial_0002.v"]
+set_global_assignment -library "pll_serial" -name QIP_FILE [file join $::quartus(qip_path) "pll_serial/pll_serial_0002.qip"]
+set_global_assignment -entity "pll_serial_0002" -library "pll_serial" -name IP_TOOL_NAME "altera_pll"
+set_global_assignment -entity "pll_serial_0002" -library "pll_serial" -name IP_TOOL_VERSION "17.0"
