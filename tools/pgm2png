@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+#
+# Convert a binary PGM (P5, 8-bit) -- what tb/verilator/tb_emu.sv writes for
+# each screen -- into a PNG.  No libraries beyond the standard one.
+#
+#   tools/pgm2png screen_00042.pgm [-o out.png] [--crop]
+#
+# --crop keeps the 1152x900 Sun screen and drops the 4-pixel, 2-line border
+# fb_scanout puts round it.
+#
+import argparse, struct, sys, zlib
+
+
+def read_pgm(path):
+    data = open(path, "rb").read()
+    fields, pos = [], 0
+    while len(fields) < 4:
+        while data[pos:pos + 1].isspace():
+            pos += 1
+        if data[pos:pos + 1] == b"#":
+            pos = data.index(b"\n", pos)
+            continue
+        end = pos
+        while not data[end:end + 1].isspace():
+            end += 1
+        fields.append(data[pos:end])
+        pos = end
+    if fields[0] != b"P5" or int(fields[3]) != 255:
+        sys.exit("pgm2png: only 8-bit binary PGM (P5) is supported")
+    w, h = int(fields[1]), int(fields[2])
+    return w, h, data[pos + 1:pos + 1 + w * h]
+
+
+def write_png(path, w, h, pix):
+    raw = b"".join(b"\x00" + pix[y * w:(y + 1) * w] for y in range(h))
+    def chunk(kind, body):
+        return (struct.pack(">I", len(body)) + kind + body +
+                struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+    png = (b"\x89PNG\r\n\x1a\n" +
+           chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0)) +
+           chunk(b"IDAT", zlib.compress(raw, 9)) +
+           chunk(b"IEND", b""))
+    open(path, "wb").write(png)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("pgm")
+    ap.add_argument("-o", "--out")
+    ap.add_argument("--crop", action="store_true")
+    a = ap.parse_args()
+    w, h, pix = read_pgm(a.pgm)
+    if a.crop and (w, h) == (1160, 904):
+        pix = b"".join(pix[(y + 2) * w + 4:(y + 2) * w + 4 + 1152] for y in range(900))
+        w, h = 1152, 900
+    write_png(a.out or a.pgm.rsplit(".", 1)[0] + ".png", w, h, pix)
+
+
+if __name__ == "__main__":
+    main()

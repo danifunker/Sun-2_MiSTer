@@ -13,6 +13,11 @@ VFLAGS := --binary --timing -Wno-fatal -Wno-WIDTH -Wno-WIDTHEXPAND -Wno-WIDTHTRU
 
 TESTS := tb_mister_sdram tb_mister_block tb_mister_kbd_mouse
 
+# The whole core is its own makefile; it is a run, not a quick test, so it is
+# not part of `all'.
+.DEFAULT_GOAL := all
+include emu.mk
+
 all: $(TESTS)
 
 tb_mister_sdram:
@@ -31,6 +36,6 @@ tb_mister_kbd_mouse:
 	./obj_$@/$@
 
 clean:
-	rm -rf obj_*
+	rm -rf obj_* run_*
 
 .PHONY: all clean $(TESTS)
