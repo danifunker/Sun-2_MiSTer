@@ -101,7 +101,21 @@ module sun2_vme_scsi #(
     input  wire [31:0] blk_count,
     input  wire        blk_buf_we,
     input  wire [8:0]  blk_buf_addr,
-    input  wire [7:0]  blk_buf_wdata
+    input  wire [7:0]  blk_buf_wdata,
+
+    // ---- the tape drive's, on the same cable (see sun2_scsi_core.sv)
+    output wire        tblk_start,
+    output wire [31:0] tblk_lba,
+    output wire [7:0]  tblk_buf_rdata,
+    input  wire        tblk_done,
+    input  wire        tblk_err,
+    input  wire        tblk_ready,
+    input  wire [31:0] tblk_count,
+    input  wire        tblk_buf_we,
+    input  wire [8:0]  tblk_buf_addr,
+    input  wire [7:0]  tblk_buf_wdata,
+    input  wire        tape_changed,
+    input  wire [1:0]  tape_volume
 );
 
    // ------------------------------------------------------------------
@@ -167,7 +181,8 @@ module sun2_vme_scsi #(
    sun2_scsi_core #(.DVMA_BASE    (DVMA_BASE),
                     .DMA_ADDR_BITS(24),          // VME A24
                     .HAS_INTVEC   (1),           // a vectored interrupter
-                    .PRODUCT      ("SUN VME SCSI SD "))
+                    .PRODUCT      ("SUN VME SCSI SD "),
+                    .HAS_TAPE     (1))           // st0, the install medium
    scsi (.CLK(CLK), .RESET(RESET),
 
          .sel_i(sel_scsi), .fire_i(fire), .reg_i(reg_sel),
@@ -185,7 +200,14 @@ module sun2_vme_scsi #(
          .blk_buf_rdata(blk_buf_rdata),
          .blk_done(blk_done), .blk_err(blk_err), .blk_ready(blk_ready),
          .blk_count(blk_count), .blk_buf_we(blk_buf_we),
-         .blk_buf_addr(blk_buf_addr), .blk_buf_wdata(blk_buf_wdata));
+         .blk_buf_addr(blk_buf_addr), .blk_buf_wdata(blk_buf_wdata),
+
+         .tblk_start(tblk_start), .tblk_lba(tblk_lba),
+         .tblk_buf_rdata(tblk_buf_rdata),
+         .tblk_done(tblk_done), .tblk_err(tblk_err), .tblk_ready(tblk_ready),
+         .tblk_count(tblk_count), .tblk_buf_we(tblk_buf_we),
+         .tblk_buf_addr(tblk_buf_addr), .tblk_buf_wdata(tblk_buf_wdata),
+         .tape_changed(tape_changed), .tape_volume(tape_volume));
 
    // ------------------------------------------------------------------
    // The clock

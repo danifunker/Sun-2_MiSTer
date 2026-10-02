@@ -76,6 +76,23 @@ module top(input         cpu_clk,
 	   input [8:0] 	 blk_buf_addr,
 	   input [7:0] 	 blk_buf_wdata,
 
+	   /* The tape drive's, on the VME SCSI board's cable: the same seam,
+	    read only.  tape_changed is one clock when an image is mounted or
+	    removed, tape_volume the cartridge picked out of it.  Tied off
+	    without SUN2_VME_SCSI. */
+	   output 	 tblk_start,
+	   output [31:0] tblk_lba,
+	   output [7:0]  tblk_buf_rdata,
+	   input 	 tblk_done,
+	   input 	 tblk_err,
+	   input 	 tblk_ready,
+	   input [31:0]  tblk_count,
+	   input 	 tblk_buf_we,
+	   input [8:0] 	 tblk_buf_addr,
+	   input [7:0] 	 tblk_buf_wdata,
+	   input 	 tape_changed,
+	   input [1:0] 	 tape_volume,
+
 	   /* wishbone */
 	   output 	 wb_cyc_o,
 	   output 	 wb_stb_o,
@@ -727,7 +744,14 @@ module top(input         cpu_clk,
       .blk_buf_rdata(blk_buf_rdata),
       .blk_done(blk_done), .blk_err(blk_err), .blk_ready(blk_ready),
       .blk_count(blk_count), .blk_buf_we(blk_buf_we),
-      .blk_buf_addr(blk_buf_addr), .blk_buf_wdata(blk_buf_wdata));
+      .blk_buf_addr(blk_buf_addr), .blk_buf_wdata(blk_buf_wdata),
+
+      .tblk_start(tblk_start), .tblk_lba(tblk_lba),
+      .tblk_buf_rdata(tblk_buf_rdata),
+      .tblk_done(tblk_done), .tblk_err(tblk_err), .tblk_ready(tblk_ready),
+      .tblk_count(tblk_count), .tblk_buf_we(tblk_buf_we),
+      .tblk_buf_addr(tblk_buf_addr), .tblk_buf_wdata(tblk_buf_wdata),
+      .tape_changed(tape_changed), .tape_volume(tape_volume));
 
    assign mb_ether_int  = 1'b0;
    assign vec_level     = 3'd2;   // conf.sun2/GENERIC: `sc0 ... priority 2'
@@ -1149,6 +1173,13 @@ module top(input         cpu_clk,
    assign mb_hit       = eth_hit | scsi_hit;
    assign mb_ack       = (eth_hit & eth_ack) | (scsi_hit & scsi_ack);
    assign mb_card_dout = scsi_hit ? scsi_dout : eth_dout;
+`endif
+
+`ifndef SUN2_VME_SCSI
+   // The tape hangs off the VME SCSI board's cable; no board, no tape.
+   assign tblk_start     = 1'b0;
+   assign tblk_lba       = 32'h0;
+   assign tblk_buf_rdata = 8'h0;
 `endif
 
    // assign todebug = PC[7:0] ;

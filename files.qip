@@ -82,6 +82,7 @@ set_global_assignment -name VERILOG_FILE rtl/sun2-vme/sun2_ether_ctl.v
 set_global_assignment -name VERILOG_FILE rtl/sun2-vme/sun2_phy_status.v
 
 # ---- the machine's SystemVerilog parts ----------------------------------------
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-common/sun2_mt02.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-common/sun2_scsi_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-vme/sun2_vme_scsi.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2-vme/sun2_ethernet.sv

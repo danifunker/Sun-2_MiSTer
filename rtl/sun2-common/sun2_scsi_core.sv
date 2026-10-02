@@ -92,7 +92,12 @@ module sun2_scsi_core #(
     parameter bit          HAS_INTVEC = 1,
 
     // What INQUIRY reports, so a machine's console names the board it has.
-    parameter logic [127:0] PRODUCT = "SUN VME SCSI SD "
+    parameter logic [127:0] PRODUCT = "SUN VME SCSI SD ",
+
+    // Is there a tape drive on the bus as well?  An Emulex MT-02 at target 4
+    // (sun2_mt02.sv), the st0 of SunOS's GENERIC.  Zero leaves it unbuilt and
+    // the tblk_* ports unread.
+    parameter bit          HAS_TAPE = 0
 ) (
     input  wire        CLK,
     input  wire        RESET,
@@ -135,7 +140,23 @@ module sun2_scsi_core #(
     input  wire [31:0] blk_count,
     input  wire        blk_buf_we,
     input  wire [8:0]  blk_buf_addr,
-    input  wire [7:0]  blk_buf_wdata
+    input  wire [7:0]  blk_buf_wdata,
+
+    // ---- the tape's, the same seam less the write direction: the cartridge
+    //      is read only.  tape_changed is one clock when an image is mounted
+    //      or removed; tape_volume picks the cartridge out of the image.
+    output wire        tblk_start,
+    output wire [31:0] tblk_lba,
+    output wire [7:0]  tblk_buf_rdata,
+    input  wire        tblk_done,
+    input  wire        tblk_err,
+    input  wire        tblk_ready,
+    input  wire [31:0] tblk_count,
+    input  wire        tblk_buf_we,
+    input  wire [8:0]  tblk_buf_addr,
+    input  wire [7:0]  tblk_buf_wdata,
+    input  wire        tape_changed,
+    input  wire [1:0]  tape_volume
 );
 
    localparam [2:0] R_DATA  = 3'd0,   // +0x00
@@ -299,6 +320,18 @@ module sun2_scsi_core #(
               // Programmers' Manual is explicit and it is the single most
               // non-obvious behaviour on the board.
               if (din_i[4]) st_buserr <= 1'b0;
+              // Odd Length is the board's SecondByte flip-flop -- "initially
+              // off, and changes state after each data byte is transferred",
+              // Theory of Operation 1.1.7 -- so it describes the transfer in
+              // progress and not a fault to be latched.  Word Mode off resets
+              // it, and every Sun driver selects with ICR_SELECT alone, word
+              // mode clear, before each command, which is what makes the bit
+              // mean "this transfer" to them.  Holding it from an earlier odd
+              // read is not survivable: the standalone scdoit that tpboot
+              // uses adds one to the residue of any non-read command that
+              // finds it set, a REWIND comes back as -1, and the tape cannot
+              // be opened -- "boot failed", with nothing else printed.
+              if (!din_i[2]) st_odd <= 1'b0;
               // Parity Error is latched inside the SCSI control PAL and clears
               // only when Parity Enable is momentarily dropped.  Its equation
               // says so -- SCSI_U108: "ASSERT PARERR / OR / ENPAR ..." with
@@ -371,9 +404,40 @@ module sun2_scsi_core #(
    // has an ATN driver at all -- the Programmers' Manual says ATN is not
    // implemented, "because it is useless without disconnect/reconnect" -- and
    // their drivers put the LUN in the CDB, so the two agree without a patch.
-   scsi_t ini, targ;
+   scsi_t ini, targ, tape;
 
-   scsi_fabric fabric (.a_i(ini), .b_i(targ), .c_i('0), .d_i('0), .bus_o(bus));
+   scsi_fabric fabric (.a_i(ini), .b_i(targ), .c_i(tape), .d_i('0), .bus_o(bus));
+
+   // The tape, on the fabric's spare port.  A device that drives nothing is a
+   // device that is not there, so without one the bus is exactly as before.
+   generate if (HAS_TAPE) begin : g_tape
+      blk_req_t treq;
+      blk_rsp_t trsp;
+      assign tblk_start     = treq.start;
+      assign tblk_lba       = treq.lba;
+      assign tblk_buf_rdata = treq.buf_rdata;
+      always @* begin
+         trsp           = '0;
+         trsp.done      = tblk_done;
+         trsp.err       = tblk_err;
+         trsp.ready     = tblk_ready;
+         trsp.count     = tblk_count;
+         trsp.buf_we    = tblk_buf_we;
+         trsp.buf_addr  = tblk_buf_addr;
+         trsp.buf_wdata = tblk_buf_wdata;
+      end
+
+      sun2_mt02 #(.TARGET_ID(4)) st0 (
+          .clk_i(CLK), .rst_i(RESET),
+          .drive_o(tape), .bus_i(bus),
+          .blk_o(treq), .blk_i(trsp),
+          .media_changed_i(tape_changed), .volume_i(tape_volume));
+   end else begin : g_no_tape
+      assign tape           = '0;
+      assign tblk_start     = 1'b0;
+      assign tblk_lba       = 32'h0;
+      assign tblk_buf_rdata = 8'h0;
+   end endgenerate
 
    blk_req_t blk_req_w;
    blk_rsp_t blk_rsp_w;
@@ -564,6 +628,14 @@ module sun2_scsi_core #(
         // ---- target to memory ----
         D_IN:
           if (dma_armed & bus.req & ~dma_done) begin
+             // The held byte is not DMA'd, so it is not counted either: the
+             // board only advances address and count on a DMA cycle, and a
+             // lone byte in the Data Register never starts one.  Both drivers
+             // count it themselves when they take it -- sundev/sc.c scintr()
+             // stores it at baddr + count - resid and then resid--, and the
+             // standalone scdoit subtracts one from the residue -- so a count
+             // that had already moved puts the byte one past the buffer and
+             // makes the residue -1.
              if (odd_tail) begin
                 dma_odd_byte <= bus.data;
                 dma_hold_odd <= 1'b1;
@@ -571,8 +643,8 @@ module sun2_scsi_core #(
                 if (stage_sel == 4'h0) chunk_adr <= cur_va[23:2];
                 stage[cur_lane*8 +: 8] <= bus.data;
                 stage_sel[cur_lane]    <= 1'b1;
+                dma_adv                <= 1'b1;
              end
-             dma_adv    <= 1'b1;
              nbytes_odd <= ~nbytes_odd;
              dma_ack_q  <= 1'b1;
              dst        <= D_INACK;

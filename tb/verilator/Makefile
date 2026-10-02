@@ -11,7 +11,7 @@ VFLAGS := --binary --timing -Wno-fatal -Wno-WIDTH -Wno-WIDTHEXPAND -Wno-WIDTHTRU
           -Wno-UNSIGNED -Wno-CMPCONST -Wno-DECLFILENAME -Wno-UNUSED -Wno-PINCONNECTEMPTY \
           +define+SIMULATION=1
 
-TESTS := tb_mister_sdram tb_mister_block tb_mister_kbd_mouse
+TESTS := tb_mister_sdram tb_mister_block tb_mister_kbd_mouse tb_mt02 tb_scsi_odd
 
 # The whole core is its own makefile; it is a run, not a quick test, so it is
 # not part of `all'.
@@ -33,6 +33,23 @@ tb_mister_block:
 tb_mister_kbd_mouse:
 	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ \
 	    $@.sv $(RTL)/sun2_mister_kbd_mouse.sv
+	./obj_$@/$@
+
+# The tapes it reads are built by tools/mktape itself, so the image format is
+# tested from both ends.
+tb_mt02:
+	mkdir -p obj_$@
+	python3 mk_mt02_tapes.py obj_$@ ../../tools/mktape
+	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ \
+	    $(RTL)/vendor/wish5380/wish5380_pkg.sv $(RTL)/vendor/wish5380/scsi_fabric.sv \
+	    $(RTL)/sun2-common/sun2_mt02.sv $@.sv
+	./obj_$@/$@ +dir=obj_$@
+
+tb_scsi_odd:
+	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ \
+	    $(RTL)/vendor/wish5380/wish5380_pkg.sv $(RTL)/vendor/wish5380/scsi_fabric.sv \
+	    $(RTL)/vendor/wish5380/scsi_targ.sv $(RTL)/sun2-common/sun2_mt02.sv \
+	    -I$(RTL)/sun2-common $(RTL)/sun2-common/sun2_scsi_core.sv $@.sv
 	./obj_$@/$@
 
 clean:

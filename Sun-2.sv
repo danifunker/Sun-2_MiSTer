@@ -56,8 +56,11 @@ module emu
     localparam CONF_STR = {
         "Sun-2;UART9600;",
         "S0,IMGVHD,SCSI disk (sd0);",
+        "S1,QIC,Tape (st0);",
+        "O[4:3],Tape volume,1,2,3;",
         "-;",
         "O[2:1],Aspect ratio,Original,Full Screen,4:3;",
+        "O[6:5],Scale,V-Integer,Normal,Narrower HV-Integer,Wider HV-Integer;",
         "-;",
         "R0,Reset;",
         "V,v",`BUILD_DATE
@@ -67,10 +70,14 @@ module emu
     wire [1:0]   buttons;
 
     // The raster is 1160x904 (the 1152x900 screen and a small border, which
-    // fb_scanout needs for its prefetch) of square pixels.
-    wire [1:0] ar = status[2:1];
-    assign VIDEO_ARX = (ar == 2'd0) ? 13'd1160 : (ar == 2'd2) ? 13'd4 : 13'd0;
-    assign VIDEO_ARY = (ar == 2'd0) ? 13'd904  : (ar == 2'd2) ? 13'd3 : 13'd0;
+    // fb_scanout needs for its prefetch) of square pixels.  The aspect ratio
+    // and the integer scaling are the framework's video_freak, below the
+    // frame buffer.
+    // V-Integer is the default, so it is listed first and its status value is
+    // 0: video_freak's own numbering is 0 normal, 1 V-integer.
+    wire [1:0] ar    = status[2:1];
+    wire [2:0] scale = (status[6:5] == 2'd0) ? 3'd1 :
+                       (status[6:5] == 2'd1) ? 3'd0 : {1'b0, status[6:5]};
 
     // ---- clocks ------------------------------------------------------------------
     wire clk_mem, cpu_clk, clk_pix, clk_mii, clk_ser;
@@ -99,13 +106,14 @@ module emu
     wire [10:0] ps2_key;
     wire [24:0] ps2_mouse;
 
-    wire [31:0] sd_lba[1];
-    wire [0:0]  sd_rd, sd_wr, sd_ack;
+    // Two virtual drives: VD 0 the disk, VD 1 the tape.
+    wire [31:0] sd_lba[2];
+    wire [1:0]  sd_rd, sd_wr, sd_ack;
     wire [13:0] sd_buff_addr;
     wire [7:0]  sd_buff_dout;
-    wire [7:0]  sd_buff_din[1];
+    wire [7:0]  sd_buff_din[2];
     wire        sd_buff_wr;
-    wire [0:0]  img_mounted;
+    wire [1:0]  img_mounted;
     wire [63:0] img_size;
 
     wire        ioctl_download;
@@ -114,7 +122,7 @@ module emu
     wire [26:0] ioctl_addr;
     wire [7:0]  ioctl_dout;
 
-    hps_io #(.CONF_STR(CONF_STR), .VDNUM(1)) hps_io (
+    hps_io #(.CONF_STR(CONF_STR), .VDNUM(2)) hps_io (
         .clk_sys        (clk_mem),
         .HPS_BUS        (HPS_BUS),
         .EXT_BUS        (),
@@ -237,6 +245,54 @@ module emu
         .img_size      (img_size)
     );
 
+    // ---- the tape --------------------------------------------------------------------------
+    // The same bridge on VD 1, read only: the image is a .qic from
+    // tools/mktape, and the OSD's "Tape volume" picks the cartridge in it.
+    wire        tblk_start, tblk_done, tblk_err, tblk_ready, tblk_buf_we, tblk_busy, tape_changed;
+    wire [31:0] tblk_lba, tblk_count;
+    wire [7:0]  tblk_buf_rdata, tblk_buf_wdata;
+    wire [8:0]  tblk_buf_addr;
+
+    sun2_mister_block tape (
+        .clk           (cpu_clk),
+        .blk_start     (tblk_start),
+        .blk_we        (1'b0),
+        .blk_lba       (tblk_lba),
+        .blk_buf_rdata (tblk_buf_rdata),
+        .blk_done      (tblk_done),
+        .blk_err       (tblk_err),
+        .blk_ready     (tblk_ready),
+        .blk_count     (tblk_count),
+        .blk_buf_we    (tblk_buf_we),
+        .blk_buf_addr  (tblk_buf_addr),
+        .blk_buf_wdata (tblk_buf_wdata),
+        .busy          (tblk_busy),
+        .changed       (tape_changed),
+
+        .clk_hps       (clk_mem),
+        .sd_lba        (sd_lba[1]),
+        .sd_rd         (sd_rd[1]),
+        .sd_wr         (sd_wr[1]),
+        .sd_ack        (sd_ack[1]),
+        .sd_buff_addr  (sd_buff_addr[8:0]),
+        .sd_buff_dout  (sd_buff_dout),
+        .sd_buff_din   (sd_buff_din[1]),
+        .sd_buff_wr    (sd_buff_wr),
+        .img_mounted   (img_mounted[1]),
+        .img_size      (img_size)
+    );
+
+    // The volume, from the OSD's clock: taken once two samples agree, so a
+    // change caught between its two bits is never seen as a third volume.
+    (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
+    reg [1:0] tvol_s1 = 2'd0;
+    reg [1:0] tvol_s2 = 2'd0, tape_volume = 2'd0;
+    always @(posedge cpu_clk) begin
+        tvol_s1 <= status[4:3];
+        tvol_s2 <= tvol_s1;
+        if (tvol_s2 == tvol_s1) tape_volume <= tvol_s2;
+    end
+
     // ---- memory -------------------------------------------------------------------------
     wire         wb_cyc, wb_stb, wb_we, wb_ack;
     wire [29:0]  wb_adr;
@@ -341,6 +397,19 @@ module emu
         .blk_buf_addr   (blk_buf_addr),
         .blk_buf_wdata  (blk_buf_wdata),
 
+        .tblk_start     (tblk_start),
+        .tblk_lba       (tblk_lba),
+        .tblk_buf_rdata (tblk_buf_rdata),
+        .tblk_done      (tblk_done),
+        .tblk_err       (tblk_err),
+        .tblk_ready     (tblk_ready),
+        .tblk_count     (tblk_count),
+        .tblk_buf_we    (tblk_buf_we),
+        .tblk_buf_addr  (tblk_buf_addr),
+        .tblk_buf_wdata (tblk_buf_wdata),
+        .tape_changed   (tape_changed),
+        .tape_volume    (tape_volume),
+
         .wb_cyc_o       (wb_cyc),
         .wb_stb_o       (wb_stb),
         .wb_adr_o       (wb_adr),
@@ -400,12 +469,32 @@ module emu
     assign VGA_B     = rgb[7:0];
     assign VGA_HS    = hs;
     assign VGA_VS    = vs;
-    assign VGA_DE    = de;
+
+    // A one-pixel font scaled by 1080/904 is a font whose strokes are one or two
+    // pixels wide depending on where they land, and blurred between.  V-Integer
+    // draws the 904 lines 1:1 at 1080p, with a border; Original keeps the
+    // pixels square, Full Screen fills the display, 4:3 is 4:3.
+    video_freak video_freak (
+        .CLK_VIDEO   (clk_pix),
+        .CE_PIXEL    (1'b1),
+        .VGA_VS      (vs),
+        .HDMI_WIDTH  (HDMI_WIDTH),
+        .HDMI_HEIGHT (HDMI_HEIGHT),
+        .VGA_DE      (VGA_DE),
+        .VIDEO_ARX   (VIDEO_ARX),
+        .VIDEO_ARY   (VIDEO_ARY),
+        .VGA_DE_IN   (de),
+        .ARX         ((ar == 2'd0) ? 12'd1160 : (ar == 2'd2) ? 12'd4 : 12'd0),
+        .ARY         ((ar == 2'd0) ? 12'd904  : (ar == 2'd2) ? 12'd3 : 12'd0),
+        .CROP_SIZE   (12'd0),
+        .CROP_OFF    (5'd0),
+        .SCALE       (scale)
+    );
 
     // ---- LEDs ---------------------------------------------------------------------------
     // User: the machine is in reset (no PROM yet, or the OSD's reset).
-    // Disk: the SCSI target is moving a block, ORed with the HPS's own activity.
+    // Disk: the disk or the tape is moving a block, ORed with the HPS's own activity.
     assign LED_USER = reset_cpu;
-    assign LED_DISK = {1'b0, blk_busy};
+    assign LED_DISK = {1'b0, blk_busy | tblk_busy};
 
 endmodule

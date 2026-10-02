@@ -137,6 +137,7 @@ initial begin : heartbeat
         #(longint'(hb * 1.0e9));
         $display("[%0t] %0.0f ms: frames %0d, screens %0d, bus errors %0d, LED_DISK %b",
                  $time, $realtime / 1.0e9, frames, shots, berrs, LED_DISK);
+        $fflush;        // a run is watched while it goes, and its log is usually a file
     end
 end
 

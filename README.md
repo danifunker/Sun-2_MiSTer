@@ -26,7 +26,22 @@ What a user needs:
   `Inputs/boot0.rom`). It is not in the bitstream. Main_MiSTer loads it at
   start-up, and the machine stays in reset until it has.
 * **A disk image** for the OSD's *SCSI disk (sd0)* entry: a raw image of a
-  Sun SCSI disk, with a label and a SunOS whose fstab names `sd0`.
+  Sun SCSI disk, with a label and a SunOS whose fstab names `sd0`. To install
+  SunOS yourself, `tools/mktape --disk sd0.img` writes an empty, labelled
+  Micropolis 1558 (329 MB) to install onto.
+* **A tape image**, to install from, for the OSD's *Tape (st0)* entry: a
+  `.qic` file that `tools/mktape` builds from a SunOS release -- the `.rar` or
+  `.zip` it came in, a folder per volume of numbered files, or SIMH `.tap`
+  files:
+
+      tools/mktape -o sunos-4.0.3-sun2.qic sunos_4.0.3_sun2.rar
+
+  One image holds every volume; *Tape volume* in the OSD is the cartridge in
+  the drive, and changing it is changing tapes. The drive is an Emulex MT-02
+  QIC controller at SCSI target 4 (`rtl/sun2-common/sun2_mt02.sv`), what
+  SunOS calls `st0`, and it is read only. The PROM boots it with `b st()`;
+  [doc/install-sunos.md](doc/install-sunos.md) is the whole install, step by
+  step, as done on a MiSTer.
 
 The serial console is the MiSTer UART at 9600 baud. With the frame buffer
 fitted the PROM puts its console on the screen and keyboard, as a real Sun
@@ -69,7 +84,8 @@ generated sources.
 | `rtl/sun2_mister_*.sv`, `rtl/sdram.sv`, `rtl/pll*.v` | the MiSTer glue |
 | `sys/` | Template_MiSTer's framework, verbatim |
 | `doc/prom/` | an annotated disassembly of the boot PROM |
-| `tb/verilator/` | unit tests for the MiSTer glue: `make -C tb/verilator` (Verilator 5) |
+| `tb/verilator/` | unit tests for the MiSTer glue and the tape drive: `make -C tb/verilator` (Verilator 5); `make -C tb/verilator tb_emu` runs the whole core, `TAPE=`/`DISK=`/`KEYS=` to feed it |
+| `tools/mktape` | tape images (`.qic`) from a SunOS release, and an empty labelled disk to install onto |
 
 ## What it does
 

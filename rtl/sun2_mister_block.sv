@@ -49,6 +49,7 @@ module sun2_mister_block (
     output reg  [8:0]  blk_buf_addr  = 9'd0,
     output reg  [7:0]  blk_buf_wdata = 8'd0,
     output wire        busy,            // for the disk LED
+    output reg         changed       = 1'b0,   // one clock: an image was mounted or removed
 
     // ---- the MiSTer side: hps_io's clock -----------------------------------
     input  wire        clk_hps,
@@ -109,11 +110,16 @@ module sun2_mister_block (
             m_count <= img_size[40:9];
             mount_t <= ~mount_t;
         end
+    // `changed' goes with them: a remount of an image the same size as the last
+    // one moves neither blk_ready nor blk_count, and the tape has to know that
+    // a different cartridge is in the drive.
     always @(posedge clk) begin
         mount_s <= {mount_s[1:0], mount_t};
+        changed <= 1'b0;
         if (mount_s[2] != mount_s[1]) begin
             blk_ready <= m_ready;
             blk_count <= m_count;
+            changed   <= 1'b1;
         end
     end
 

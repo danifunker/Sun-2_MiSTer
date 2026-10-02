@@ -2,10 +2,12 @@
 #
 # The file list is files.qip's and the defines are Sun-2.qsf's VERILOG_MACROs,
 # read here rather than copied, so the simulation cannot drift from the build.
-# Only the framework is replaced: the PLLs (pll_stub.sv), hps_io
+# The one framework module the core instantiates, sys/video_freak.sv (with the
+# divider and multiplier it uses, sys/math.sv), is added by
+# name.  Only the framework is replaced: the PLLs (pll_stub.sv), hps_io
 # (hps_io_model.sv) and the SDRAM chip (sdram_model.sv).
 #
-#   make -C tb/verilator tb_emu [MEM_PAGES=512] [TIMEOUT_MS=3000] [ROM=...] [DISK=...] [KEYS=...]
+#   make -C tb/verilator tb_emu [MEM_PAGES=512] [TIMEOUT_MS=3000] [ROM=...] [DISK=...] [TAPE=...] [KEYS=...]
 #
 # MEM_PAGES is the installed memory in 2 KiB pages.  The PROM writes every
 # installed byte before it says anything, so 512 (1 MiB) is the default here;
@@ -20,7 +22,7 @@ MEM_PAGES  ?= 512
 TIMEOUT_MS ?= 3000
 ROM        ?= $(TOP_DIR)/build/rom/sun250-patched.bin
 EMU_OBJ    := obj_tb_emu
-EMU_SIM_ARGS = +rom=$(abspath $(ROM)) +timeout_ms=$(TIMEOUT_MS) $(if $(DISK),+disk=$(abspath $(DISK))) $(if $(KEYS),+keys=$(KEYS)) $(SIMARGS)
+EMU_SIM_ARGS = +rom=$(abspath $(ROM)) +timeout_ms=$(TIMEOUT_MS) $(if $(DISK),+disk=$(abspath $(DISK))) $(if $(TAPE),+tape=$(abspath $(TAPE))) $(if $(KEYS),'+keys=$(KEYS)') $(SIMARGS)
 
 $(TOP_DIR)/build/rom/sun250-patched.bin: $(TOP_DIR)/Inputs/boot0.rom $(TOP_DIR)/tools/sim_speedup_sun250.txt
 	mkdir -p $(dir $@)
@@ -36,7 +38,7 @@ tb_emu: $(ROM)
 	    -I$(EMU_OBJ) -I$(TOP_DIR) -I$(TOP_DIR)/rtl/sun2-common \
 	    --top-module tb_emu --Mdir $(EMU_OBJ) -o tb_emu -j 0 \
 	    tb_emu.sv pll_stub.sv hps_io_model.sv sdram_model.sv altddio_out_stub.v \
-	    $(addprefix $(TOP_DIR)/,$(QIP_FILES))
+	    $(TOP_DIR)/sys/math.sv $(TOP_DIR)/sys/video_freak.sv $(addprefix $(TOP_DIR)/,$(QIP_FILES))
 	mkdir -p run_tb_emu
 	cd run_tb_emu && ../$(EMU_OBJ)/tb_emu $(EMU_SIM_ARGS)
 

@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+#
+# Build a tape image for the emulated Emulex MT-02 (rtl/sun2-common/sun2_mt02.sv).
+#
+# A QIC cartridge is fixed 512-byte blocks in files separated by file marks,
+# so an image is the blocks and a table of where each file starts.  Block 0 is
+# the table, all big-endian 32-bit words:
+#
+#     word 0, 1     "SUN2", "TAPE"
+#     word 2        version, 1
+#     word 3        number of volumes, 1..3
+#     word 4+32*v   volume v: number of files N, 0..30
+#     then          N+1 block numbers: where each file starts, and where the
+#                   last one ends
+#
+# and the volumes' files follow it, one after another, each padded to a whole
+# number of blocks.  One image holds a whole distribution; the OSD's "Tape
+# volume" picks the cartridge in the drive.
+#
+# Each input is one volume, or several:
+#
+#     a directory of files          one volume, the files in name order
+#                                   (numerically, so 2 comes before 10)
+#     a directory of directories    one volume per subdirectory, in name order
+#     an archive (.zip, .rar, .7z)  unpacked, then as a directory -- .rar and
+#                                   .7z need `unrar' or `7z' on the PATH
+#     a SIMH .tap file              one volume; a file mark ends each file,
+#                                   two in a row end the tape
+#
+#     tools/mktape -o sunos-4.0.3-sun2.qic sunos_4.0.3_sun2.rar
+#     tools/mktape -o sunos-4.0.3-sun2.qic tape1/ tape2/
+#
+# --disk writes a disk to install onto as well: the Micropolis 1558 that SunOS
+# 4.0.3's format(8) knows, 1224 physical cylinders (1218 data, 2 alternate) of
+# 15 heads and 35 sectors, 329,011,200 bytes.  It is empty but already
+# labelled, so the miniroot can be copied to it without running format first:
+#
+#     a  /       cylinders    0-60     16 MB
+#     b  swap    cylinders   61-182    32 MB    the miniroot goes here
+#     c  whole   cylinders    0-1217  327 MB
+#     g  /usr    cylinders  183-1217  278 MB
+#
+# suninstall can change any of it.  --no-label leaves the disk all zero.
+#
+# Blocks 1-15, where installboot will put the real boot program, hold a stub
+# until then.  The PROM auto-boots a labelled disk without looking at what it
+# loads, and an empty one would run 7.5 KB of zeroes into whatever follows; the
+# stub instead says how to start the install and returns to the monitor.
+#
+# The label is struct dk_label as SunOS 4 has it (sun/dklabel.h): SunOS 3's,
+# plus rpm and pcyl in what was padding -- big-endian, with the XOR-of-shorts
+# checksum the PROM and the kernel both insist on.
+#
+import argparse
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+BLOCK = 512
+MAX_VOLUMES = 3
+MAX_FILES = 30
+
+# The Micropolis 1558.
+D_NCYL, D_ACYL, D_PCYL, D_NHEAD, D_NSECT = 1218, 2, 1224, 15, 35
+D_CYL = D_NHEAD * D_NSECT                # blocks a cylinder
+DISK_BYTES = D_PCYL * D_CYL * BLOCK
+D_PARTS = {"a": (0, 61), "b": (61, 122), "c": (0, D_NCYL), "g": (183, D_NCYL - 183)}
+
+
+def disk_label():
+    b = bytearray(BLOCK)
+    text = (f"Micropolis 1558 cyl {D_NCYL} alt {D_ACYL} hd {D_NHEAD} sec {D_NSECT}").encode()
+    b[0:len(text)] = text
+    struct.pack_into(">12H", b, 420,
+                     3600,       # dkl_rpm
+                     D_PCYL,     # dkl_pcyl
+                     0, 0, 0,    # dkl_apc, gap1, gap2
+                     1,          # dkl_intrlv
+                     D_NCYL, D_ACYL, D_NHEAD, D_NSECT,
+                     0, 0)       # dkl_bhead, dkl_ppart
+    for i, name in enumerate("abcdefgh"):
+        if name in D_PARTS:
+            cyl, ncyl = D_PARTS[name]
+            struct.pack_into(">II", b, 444 + 8 * i, cyl, ncyl * D_CYL)
+    struct.pack_into(">H", b, 508, 0xDABE)
+    ck = 0
+    for (w,) in struct.iter_unpack(">H", bytes(b[:510])):
+        ck ^= w
+    struct.pack_into(">H", b, 510, ck)
+    return bytes(b)
+
+
+# The Rev Q monitor's vector table at 0xEF0000 (mon/h/sunromvec.h): v_putchar
+# is entry 6 and v_exit_to_mon entry 49, the last.
+V_PUTCHAR, V_EXIT_TO_MON = 0xEF0018, 0xEF00C4
+STUB_MESSAGE = ("\nThis disk is labelled but has no SunOS on it yet.\n"
+                "To install from the tape in st0:  b st()\n")
+
+
+def boot_stub():
+    """Position-independent 68010 code for blocks 1-15: print, exit to the monitor."""
+    code = bytearray()
+    code += struct.pack(">HH", 0x45FA, 0x0020)          # 0  lea msg(pc),a2
+    code += struct.pack(">H", 0x7000)                   # 4  loop: moveq #0,d0
+    code += struct.pack(">H", 0x101A)                   # 6  move.b (a2)+,d0
+    code += struct.pack(">H", 0x670E)                   # 8  beq.s done
+    code += struct.pack(">H", 0x2F00)                   # 10 move.l d0,-(sp)
+    code += struct.pack(">HI", 0x2079, V_PUTCHAR)       # 12 movea.l V_PUTCHAR,a0
+    code += struct.pack(">H", 0x4E90)                   # 18 jsr (a0)
+    code += struct.pack(">H", 0x588F)                   # 20 addq.l #4,sp
+    code += struct.pack(">H", 0x60EC)                   # 22 bra.s loop
+    code += struct.pack(">HI", 0x2079, V_EXIT_TO_MON)   # 24 done: movea.l V_EXIT_TO_MON,a0
+    code += struct.pack(">H", 0x4E90)                   # 30 jsr (a0)
+    code += struct.pack(">H", 0x60F6)                   # 32 bra.s done -- `c' comes back here
+    assert len(code) == 34
+    code += STUB_MESSAGE.encode() + b"\0"               # 34 msg
+    return bytes(code) + bytes(15 * BLOCK - len(code))
+
+
+def natural_key(name):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
+
+# Hidden entries are skipped: an archive unpacked on a Mac carries .DS_Store
+# files, and one of those must not become a tape file.
+def files_in(d):
+    return sorted((e for e in os.scandir(d) if e.is_file() and not e.name.startswith(".")),
+                  key=lambda e: natural_key(e.name))
+
+
+def dirs_in(d):
+    return sorted((e for e in os.scandir(d) if e.is_dir() and not e.name.startswith(".")),
+                  key=lambda e: natural_key(e.name))
+
+
+def read_tap(path):
+    """A SIMH tape image: records of <len32 le><data, padded to even><len32 le>,
+    a zero length for a file mark.  Returns the files' contents."""
+    files, cur, marks = [], bytearray(), 0
+    with open(path, "rb") as f:
+        while True:
+            h = f.read(4)
+            if len(h) < 4:
+                break
+            n = struct.unpack("<I", h)[0]
+            if n == 0xFFFFFFFF:                 # end of medium
+                break
+            if n == 0:
+                files.append(bytes(cur))
+                cur = bytearray()
+                marks += 1
+                if marks == 2:
+                    files.pop()                 # the empty "file" between two marks
+                    break
+                continue
+            marks = 0
+            n &= 0x00FFFFFF
+            cur += f.read(n)
+            if n & 1:
+                f.read(1)
+            f.read(4)
+    if cur:
+        files.append(bytes(cur))
+    return files
+
+
+def volumes_from_dir(d):
+    subs = dirs_in(d)
+    plain = files_in(d)
+    if plain and not subs:
+        return [[open(e.path, "rb").read() for e in plain]]
+    if subs:
+        vols = []
+        for s in subs:
+            vols.extend(volumes_from_dir(s.path))
+        return vols
+    return []
+
+
+def unpack(path, into):
+    low = path.lower()
+    if low.endswith(".zip"):
+        with zipfile.ZipFile(path) as z:
+            z.extractall(into)
+        return
+    if low.endswith(".rar"):
+        unrar = (shutil.which("unrar") or shutil.which("UnRAR")
+                 or next((p for p in (r"C:\Program Files\WinRAR\UnRAR.exe",
+                                      r"C:\Program Files (x86)\WinRAR\UnRAR.exe")
+                          if os.path.exists(p)), None))
+        if unrar:
+            subprocess.run([unrar, "x", "-o+", "-idq", path, into + os.sep], check=True)
+            return
+    sevenz = shutil.which("7z") or shutil.which("7za")
+    if sevenz:
+        subprocess.run([sevenz, "x", "-y", "-o" + into, path], check=True, stdout=subprocess.DEVNULL)
+        return
+    sys.exit(f"mktape: cannot unpack {path}: need unrar or 7z on the PATH, or unpack it first")
+
+
+def volumes_from(path):
+    if os.path.isdir(path):
+        return volumes_from_dir(path)
+    low = path.lower()
+    if low.endswith(".tap"):
+        return [read_tap(path)]
+    if low.endswith((".zip", ".rar", ".7z")):
+        with tempfile.TemporaryDirectory() as t:
+            unpack(path, t)
+            return volumes_from_dir(t)
+    sys.exit(f"mktape: {path}: not a directory, an archive or a .tap file")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Build a Sun-2 MT-02 tape image (.qic).")
+    ap.add_argument("inputs", nargs="*", help="volumes: directories, archives or .tap files")
+    ap.add_argument("-o", "--output", help="the tape image to write")
+    ap.add_argument("--disk", help="also write an empty, labelled Micropolis 1558 disk image here")
+    ap.add_argument("--no-label", action="store_true", help="leave that disk all zero, for format to label")
+    ap.add_argument("-v", "--verbose", action="store_true", help="list every file")
+    a = ap.parse_args()
+
+    if a.disk:
+        with open(a.disk, "wb") as f:
+            if not a.no_label:
+                f.write(disk_label())
+                f.write(boot_stub())
+            f.truncate(DISK_BYTES)
+        print(f"{a.disk}: Micropolis 1558, {DISK_BYTES} bytes, "
+              + ("blank" if a.no_label else "labelled: a / 16 MB, b swap 32 MB, g /usr 278 MB"))
+
+    if not a.inputs:
+        if not a.disk:
+            ap.error("nothing to do")
+        return
+    if not a.output:
+        ap.error("-o is required with inputs")
+
+    vols = []
+    for p in a.inputs:
+        vols.extend(volumes_from(p))
+    if not vols:
+        sys.exit("mktape: no files found")
+    if len(vols) > MAX_VOLUMES:
+        sys.exit(f"mktape: {len(vols)} volumes; the format holds {MAX_VOLUMES}")
+    for i, v in enumerate(vols):
+        if len(v) > MAX_FILES:
+            sys.exit(f"mktape: volume {i+1} has {len(v)} files; the format holds {MAX_FILES}")
+
+    header = bytearray(BLOCK)
+    struct.pack_into(">4s4sII", header, 0, b"SUN2", b"TAPE", 1, len(vols))
+    blk = 1
+    body = []
+    for vi, files in enumerate(vols):
+        base = 16 + 128 * vi
+        struct.pack_into(">I", header, base, len(files))
+        for fi, data in enumerate(files):
+            struct.pack_into(">I", header, base + 4 + 4 * fi, blk)
+            pad = (-len(data)) % BLOCK
+            if pad:
+                print(f"mktape: volume {vi+1} file {fi+1}: {len(data)} bytes, padded to a whole block",
+                      file=sys.stderr)
+            body.append(data + bytes(pad))
+            n = (len(data) + pad) // BLOCK
+            if a.verbose:
+                print(f"  volume {vi+1} file {fi+1:2d}: block {blk:7d}, {n:6d} blocks")
+            blk += n
+        struct.pack_into(">I", header, base + 4 + 4 * len(files), blk)
+
+    with open(a.output, "wb") as f:
+        f.write(header)
+        for b in body:
+            f.write(b)
+    print(f"{a.output}: {len(vols)} volume(s), "
+          + ", ".join(f"{len(v)} files" for v in vols)
+          + f", {blk * BLOCK} bytes")
+
+
+if __name__ == "__main__":
+    main()

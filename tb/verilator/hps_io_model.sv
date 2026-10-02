@@ -9,9 +9,12 @@
 //                   clocks later; sd_buff_din taken, then the address
 //                   stepped; sd_ack down at the end).  Writes land in an
 //                   overlay and do not touch the file.
+//   +tape=<file>    the same for VD 1, the tape (a .qic from tools/mktape)
 //   +keys=<text>    typed from +keys_ms=<ms> (default 2000) on, one key about
-//                   every 30 ms: a..z 0..9 space and . / - , = ; plus
-//                   '|' for Return and '!' for the abort (Right Alt+F1, A)
+//                   every 30 ms: a..z 0..9 space and . / - , = ; and their
+//                   shifted ( ) : _ + < > ?, plus
+//                   '|' for Return, '!' for the abort (Right Alt+F1, A) and
+//                   '~' for a half-second pause
 //   +status=<hex>   the OSD's status word
 `timescale 1ps/1ps
 
@@ -50,12 +53,14 @@ module hps_io #(
     input  wire        ioctl_wait
 );
 
-    // ---- start-up: the PROM, then the disk -----------------------------------
-    string  rom_file, disk_file;
+    // ---- start-up: the PROM, then the drives -----------------------------------
+    string  rom_file, img_file;
     integer fd, n, c;
-    bit [7:0] overlay [longint];        // disk bytes written by the machine
-    integer disk_fd = 0;
-    longint disk_bytes = 0;
+    typedef bit [7:0] block_t [512];
+    block_t overlay [longint];          // blocks written by the machine, keyed {drive, block}
+    integer img_fd    [VDNUM];
+    longint img_bytes [VDNUM];
+    initial for (int d = 0; d < VDNUM; d++) begin img_fd[d] = 0; img_bytes[d] = 0; end
 
     initial begin
         logic [127:0] st;
@@ -87,55 +92,71 @@ module hps_io #(
         end else
             $display("hps_io: no +rom -- the machine will stay in reset");
 
-        if ($value$plusargs("disk=%s", disk_file)) begin
-            disk_fd = $fopen(disk_file, "rb");
-            if (disk_fd == 0) begin $display("hps_io: cannot open +disk=%s", disk_file); $finish; end
-            void'($fseek(disk_fd, 0, 2));
-            disk_bytes = $ftell(disk_fd);
-            repeat (10) @(posedge clk_sys);
-            img_size       <= 64'(disk_bytes);
-            img_mounted[0] <= 1'b1;
-            @(posedge clk_sys);
-            img_mounted[0] <= 1'b0;
-            $display("[%0t] hps_io: mounted %s, %0d bytes", $time, disk_file, disk_bytes);
+        for (int d = 0; d < VDNUM; d++) begin
+            bit got;
+            if (d == 0) got = $value$plusargs("disk=%s", img_file);
+            else        got = $value$plusargs("tape=%s", img_file);
+            if (got) begin
+                img_fd[d] = $fopen(img_file, "rb");
+                if (img_fd[d] == 0) begin $display("hps_io: cannot open %s", img_file); $finish; end
+                void'($fseek(img_fd[d], 0, 2));
+                img_bytes[d] = $ftell(img_fd[d]);
+                repeat (10) @(posedge clk_sys);
+                img_size       <= 64'(img_bytes[d]);
+                img_mounted[d] <= 1'b1;
+                @(posedge clk_sys);
+                img_mounted[d] <= 1'b0;
+                $display("[%0t] hps_io: mounted %s as VD %0d, %0d bytes", $time, img_file, d, img_bytes[d]);
+            end
         end
     end
 
-    // ---- the virtual disk ------------------------------------------------------------
-    function automatic [7:0] disk_byte(input longint off);
+    // ---- the virtual drives ------------------------------------------------------------
+    // One block at a time across all of them, as the HPS serves them.  What
+    // the machine writes is kept a block at a time, keyed by drive and block.
+    function automatic void read_block(input int d, input longint lba, output block_t blk);
         integer b;
-        if (overlay.exists(off)) return overlay[off];
-        if (disk_fd == 0 || off >= disk_bytes) return 8'h00;
-        void'($fseek(disk_fd, off, 0));
-        b = $fgetc(disk_fd);
-        return (b < 0) ? 8'h00 : 8'(b);
+        longint key;
+        key = (longint'(d) << 40) | lba;
+        if (overlay.exists(key)) begin blk = overlay[key]; return; end
+        for (int i = 0; i < 512; i++) blk[i] = 8'h00;
+        if (img_fd[d] == 0 || lba * 512 >= img_bytes[d]) return;
+        void'($fseek(img_fd[d], lba * 512, 0));
+        for (int i = 0; i < 512; i++) begin
+            b = $fgetc(img_fd[d]);
+            blk[i] = (b < 0) ? 8'h00 : 8'(b);
+        end
     endfunction
 
     initial begin : vdisk
+        block_t blk;
         forever begin
             @(posedge clk_sys);
-            if (sd_rd[0] || sd_wr[0]) begin
+            for (int d = 0; d < VDNUM; d++) if (sd_rd[d] || sd_wr[d]) begin
                 bit rd;
-                longint base;
-                rd   = sd_rd[0];
-                base = longint'(sd_lba[0]) * 512;
+                longint lba;
+                rd  = sd_rd[d];
+                lba = longint'(sd_lba[d]);
+                if (rd) read_block(d, lba, blk);
                 repeat (40) @(posedge clk_sys);         // the HPS notices
-                sd_ack[0]    <= 1'b1;
+                sd_ack[d]    <= 1'b1;
                 sd_buff_addr <= 14'd0;
                 for (int i = 0; i < 512; i++) begin
                     repeat (4) @(posedge clk_sys);
                     if (rd) begin
-                        sd_buff_dout <= disk_byte(base + i);
+                        sd_buff_dout <= blk[i];
                         @(posedge clk_sys); sd_buff_wr <= 1'b1;
                         @(posedge clk_sys); sd_buff_wr <= 1'b0;
                         @(posedge clk_sys); if (i != 511) sd_buff_addr <= sd_buff_addr + 14'd1;
                     end else begin
-                        overlay[base + i] = sd_buff_din[0];
+                        blk[i] = sd_buff_din[d];
                         if (i != 511) sd_buff_addr <= sd_buff_addr + 14'd1;
                     end
                 end
+                if (!rd) overlay[(longint'(d) << 40) | lba] = blk;
                 repeat (3) @(posedge clk_sys);
-                sd_ack[0] <= 1'b0;
+                sd_ack[d] <= 1'b0;
+                break;
             end
         end
     end
@@ -160,6 +181,16 @@ module hps_io #(
         endcase
     endfunction
 
+    // The characters typed with Shift held, as the unshifted key that makes them.
+    function automatic byte shifted(input byte ch);
+        case (ch)
+            "(": shifted = "9"; ")": shifted = "0"; ":": shifted = ";";
+            "_": shifted = "-"; "+": shifted = "="; "<": shifted = ",";
+            ">": shifted = "."; "?": shifted = "/";
+            default: shifted = 8'h00;
+        endcase
+    endfunction
+
     task automatic key_event(input bit press, input [8:0] k);
         begin
             @(posedge clk_sys);
@@ -176,9 +207,19 @@ module hps_io #(
             #(longint'(keys_ms * 1.0e9));
             $display("[%0t] hps_io: typing \"%s\"", $time, keys);
             for (int i = 0; i < keys.len(); i++) begin
-                if (keys[i] == "!") begin
-                    key_event(1, 9'h111); key_event(1, 9'h005); key_event(0, 9'h005);   // Right Alt+F1
-                    key_event(1, 9'h01C); key_event(0, 9'h01C); key_event(0, 9'h111);   // A
+                if (keys[i] == "~") begin
+                    #(longint'(500.0e9));                                       // half a second
+                end else if (keys[i] == "!") begin
+                    // L1 held while A goes down -- that is the abort; let go
+                    // of L1 first and SunOS just sees an `a'.
+                    key_event(1, 9'h111); key_event(1, 9'h005);                         // Right Alt+F1: L1
+                    key_event(1, 9'h01C); key_event(0, 9'h01C);                         // A
+                    key_event(0, 9'h005); key_event(0, 9'h111);
+                end else if (shifted(keys[i]) != 8'h00) begin
+                    key_event(1, 9'h012);                                       // Left Shift
+                    key_event(1, ps2_of(shifted(keys[i])));
+                    key_event(0, ps2_of(shifted(keys[i])));
+                    key_event(0, 9'h012);
                 end else if (ps2_of(keys[i]) != 9'h000) begin
                     key_event(1, ps2_of(keys[i]));
                     key_event(0, ps2_of(keys[i]));
