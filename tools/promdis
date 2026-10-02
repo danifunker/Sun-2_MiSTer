@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+#
+# Annotated disassembly of the Sun-2/50 / 2/160 Rev Q boot PROM (boot0.rom).
+#
+#   tools/promdis [-o OUT] [--sym doc/prom/boot0.sym] [--objdump PATH] PROM
+#
+# The image is 32 KiB at 0xEF0000 and has three parts, found by inspection and
+# checked against the PROM's own source (sun/prom_monitor/msun/mon in the
+# SunOS 3.4 tree, build directory RevQs):
+#
+#   0xEF0000-0xEF00CB  the ROM vector table, kernel/romvec.s: 50 longwords
+#                      then `bootaddr' -- named here from romvec.s itself
+#   0xEF00CC-0xEF662B  .text, from _hardreset; ends on an rts
+#   0xEF662C-0xEF7A1F  .data: version.c's SCCS id, _monrev ("Rev Q"), the
+#                      page-map init tables and the string pool
+#   0xEF7A20-0xEF7FFF  0xFF fill
+#
+# The text is disassembled with GNU objdump (m68k:68010); the data is shown as
+# strings where a run of printable bytes ends in a NUL, and as words otherwise.
+# Every jsr/bsr target gets a label, and every operand that lands on a known
+# address -- a ROM vector, a symbol from --sym, a string -- gets a comment.
+#
+# Nothing here is guessed silently: a name either comes from romvec.s, from the
+# symbols file (which says where each name came from), or is a mechanical
+# sub_/loc_ label.  Add names to the symbols file as they are established.
+#
+# objdump: Ubuntu's binutils-m68k-linux-gnu.  Without root it can be unpacked
+# in place: `apt-get download binutils-m68k-linux-gnu && dpkg -x *.deb root`,
+# then point --objdump at root/usr/bin/m68k-linux-gnu-objdump; the libraries
+# it needs are in the same package (root/usr/lib/x86_64-linux-gnu).
+#
+import argparse, hashlib, os, re, subprocess, sys
+
+BASE      = 0xEF0000
+TEXT_LO   = 0xEF00CC
+DATA_LO   = 0xEF662C
+FILL_LO   = 0xEF7A20
+PROM_HI   = 0xEF8000
+
+# kernel/romvec.s, in order (the RevQs build defines S2COLOR, so entry 41 is
+# g_fbtype and there is no trailing `fbtype' word).  Names starting `_' are
+# functions in the PROM, `g_' are monitor globals in low RAM, 0 is unused.
+ROMVEC = [
+    ("v_initsp", "INITSP"), ("v_startmon", "_hardreset"),
+    ("v_mon_id (old)", "_monrev"), ("v_bootparam", "bootaddr"),
+    ("v_memorysize", "g_memorysize"),
+    ("v_getchar", "_getchar"), ("v_putchar", "_putchar"),
+    ("v_mayget", "_mayget"), ("v_mayput", "_mayput"),
+    ("v_echo", "g_echo"), ("v_insource", "g_insource"),
+    ("v_outsink", "g_outsink"),
+    ("v_getkey", "_getkey"), ("v_initgetkey", "_initgetkey"),
+    ("v_translation", "g_translation"), ("v_keybid", "g_keybid"),
+    ("dummy0k", None), ("dummy1k", None),
+    ("v_keybuf", "g_keybuf"), ("v_mon_id", "_monrev"),
+    ("v_fwritechar", "_fwritechar"), ("v_fbaddr", "fbaddr"),
+    ("v_font", "g_font"), ("v_fwritestr", "_fwritestr"),
+    ("v_boot_me", "_boot_me"),
+    ("v_linebuf", "g_linebuf"), ("v_lineptr", "g_lineptr"),
+    ("v_linesize", "g_linesize"), ("v_getline", "_getline"),
+    ("v_getone", "_getone"), ("v_peekchar", "_peekchar"),
+    ("v_fbthere", "g_fbthere"), ("v_getnum", "_getnum"),
+    ("v_printf", "_printf"), ("v_printhex", "_printhex"),
+    ("v_leds", "g_leds"), ("v_set_leds", "_set_leds"),
+    ("v_nmi", "_nmi"), ("v_abortent", "_abortent"),
+    ("v_nmiclock", "g_nmiclock"), ("v_fbtype", "g_fbtype"),
+    ("dummy2k", None),
+    ("v_gp", "gp"), ("v_keybzscc", "g_keybzscc"),
+    ("v_keyrinit", "g_keyrinit"), ("v_keyrtick", "g_keyrtick"),
+    ("dummy3k", None),
+    ("v_resetaddr", "g_resetaddr"), ("v_resetmap", "g_resetmap"),
+    ("v_exit_to_mon", "_exit_to_mon"),
+]
+
+PRINTABLE = set(range(0x20, 0x7F)) | {0x07, 0x08, 0x09, 0x0A, 0x0D}
+
+
+def load_syms(path):
+    """addr name [size=N] [; comment] -- one per line, # starts a comment."""
+    syms, windows = {}, []
+    if not path:
+        return syms, windows
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#"):      # notes may contain '#'
+            continue
+        note = ""
+        if ";" in line:
+            line, note = line.split(";", 1)
+            line, note = line.strip(), note.strip()
+        f = line.split()
+        addr, name = int(f[0], 16), f[1]
+        size = data = 0
+        for x in f[2:]:
+            if x.startswith("size="):
+                size = int(x[5:], 0)
+            elif x.startswith("data="):
+                data = int(x[5:], 0)
+        syms[addr] = (name, note, data)
+        if size:
+            windows.append((addr, addr + size, name))
+    return syms, windows
+
+
+def cstr(b):
+    out = []
+    for c in b:
+        out.append({0x07: "\\a", 0x08: "\\b", 0x09: "\\t", 0x0A: "\\n",
+                    0x0D: "\\r", 0x22: '\\"', 0x5C: "\\\\"}.get(c, chr(c)))
+    return "".join(out)
+
+
+def in_island_raw(islands, t):
+    return any(lo <= t < lo + ln for lo, (ln, _) in islands.items())
+
+
+def find_strings(img, lo, hi):
+    """NUL-terminated runs of >= 3 printable bytes in [lo, hi)."""
+    strs, a = {}, lo
+    while a < hi:
+        e = a
+        while e < hi and img[e - BASE] in PRINTABLE:
+            e += 1
+        if e < hi and img[e - BASE] == 0 and e - a >= 3:
+            strs[a] = img[a - BASE:e - BASE]
+            a = e + 1
+        else:
+            a = e + 1 if e > a else a + 1
+    return strs
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("prom")
+    ap.add_argument("-o", "--out", default="-")
+    ap.add_argument("--sym")
+    ap.add_argument("--objdump", default=os.environ.get("OBJDUMP", "m68k-linux-gnu-objdump"))
+    a = ap.parse_args()
+
+    img = open(a.prom, "rb").read()
+    if len(img) != PROM_HI - BASE:
+        sys.exit("promdis: expected a 32768-byte image, got %d" % len(img))
+    syms, windows = load_syms(a.sym)
+
+    def long_at(addr):
+        o = addr - BASE
+        return int.from_bytes(img[o:o + 4], "big")
+
+    # ---- names from the ROM vector table ---------------------------------
+    names = {}                          # PROM address -> label
+    ramnames = {}                       # low-RAM address -> global name
+    for i, (field, sym) in enumerate(ROMVEC):
+        v = long_at(BASE + 4 * i)
+        if sym is None:
+            continue
+        if BASE <= v < PROM_HI:
+            names.setdefault(v, sym)
+        elif sym.startswith("g_") or sym == "gp":
+            ramnames.setdefault(v, sym)
+    names.setdefault(BASE + 4 * len(ROMVEC), "bootaddr")
+    for addr, (n, _, _) in syms.items():
+        if BASE <= addr < PROM_HI:
+            names[addr] = n
+        else:
+            ramnames.setdefault(addr, n)
+
+    strings = find_strings(img, DATA_LO, FILL_LO)
+
+    # ---- disassemble the text ---------------------------------------------
+    #
+    # Linear sweep goes wrong in two places in this image, and both are fixed
+    # by restarting the sweep rather than by trusting it:
+    #
+    #  * Functions start on 4-byte boundaries, so one ends `rts; .word 0' and
+    #    the next begins `link %fp,...'.  Swept straight through, the pad and
+    #    the link decode together as `orib #86,%d0' and the function's first
+    #    real instruction is lost.
+    #  * A C switch compiles to `movew %pc@(T,%d0:w),%d0; jmp %pc@(T,%d0:w)'
+    #    with a table of word offsets inline at T, which decodes as nonsense.
+    #
+    # So the text is cut into segments at every known entry point -- ROM
+    # vectors, symbols, call targets, case targets, the instruction after a
+    # pad word -- with pads and jump tables kept out as data islands, and the
+    # cut is repeated until it stops finding new entry points.
+    ver = subprocess.run([a.objdump, "--version"], capture_output=True,
+                         text=True).stdout.splitlines()[0]
+    insn_re = re.compile(r"^\s*([0-9a-f]+):\t([0-9a-f ]+?)\s*(?:\t(.*))?$")
+
+    def disasm(lo, hi):
+        cmd = [a.objdump, "-D", "-b", "binary", "-m", "m68k:68010",
+               "--adjust-vma=0x%x" % BASE,
+               "--start-address=0x%x" % lo, "--stop-address=0x%x" % hi, a.prom]
+        raw = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+        res = []
+        for line in raw.splitlines():
+            m = insn_re.match(line)
+            if not m:
+                continue
+            addr, hx, txt = int(m.group(1), 16), m.group(2), m.group(3)
+            if txt is None and res:     # continuation of a long instruction
+                p = res[-1]
+                res[-1] = (p[0], p[1] + " " + hx, p[2])
+                continue
+            res.append((addr, hx, txt or ""))
+        return res
+
+    def word_at(addr):
+        o = addr - BASE
+        return int.from_bytes(img[o:o + 2], "big")
+
+    entries = {x for x in names if TEXT_LO <= x < DATA_LO} | {TEXT_LO}
+    islands = {}                        # addr -> (length, [lines])
+
+    def ascii_lines(lo, hi):
+        """Render [lo, hi) as NUL-terminated strings, then any tail as bytes."""
+        lines, p = [], lo
+        while p < hi:
+            e = p
+            while e < hi and img[e - BASE] != 0:
+                e += 1
+            s = img[p - BASE:e - BASE]
+            if e < hi:
+                lines.append((p - lo, '.ascii "%s\\0"' % cstr(s)))
+                p = e + 1
+            else:
+                lines.append((p - lo, ".byte %s" % ", ".join("0x%02x" % c for c in s)))
+                p = e
+        return lines
+
+    # Data the symbols file declares (data=N), for tables nothing else finds.
+    for addr, (n, note, data) in syms.items():
+        if data and TEXT_LO <= addr < DATA_LO:
+            chunk = img[addr - BASE:addr - BASE + data]
+            ls = []
+            for i in range(0, data, 8):
+                ls.append((i, ".byte %s" % ", ".join("0x%02x" % c for c in chunk[i:i + 8])))
+            islands[addr] = (data, ls)
+            entries.add(addr + data)
+
+    # A zero word just before a 4-byte-aligned `link %fp': the pad between
+    # two functions, whatever ended the first (rts, jmp, bra).
+    for o in range(TEXT_LO, DATA_LO - 4, 2):
+        if (o + 2) % 4 == 0 and word_at(o) == 0 and word_at(o + 2) == 0x4E56 and not in_island_raw(islands, o):
+            islands[o] = (2, [(0, ".word 0x0000                ; pad to a 4-byte function boundary")])
+            entries.add(o + 2)
+
+    # The assembly diagnostics keep their messages in the text, after an
+    # unconditional branch, and point at them with `lea %pc@(msg),%aN':
+    #     lea %pc@(msg),%a0 ; bras over ; msg: .ascii "..." ; over:
+    # or the lea elsewhere and the message after some other bra or rts.  So
+    # every lea (d16,PC) -- 0x41FA | n<<9 -- whose target is a NUL-terminated
+    # printable string directly after a bras, braw, rts or rte is data.
+    def flow_ends_at(x):
+        w2 = word_at(x - 2)
+        if w2 in (0x4E75, 0x4E73):                      # rts, rte
+            return True
+        if w2 & 0xFF00 == 0x6000 and w2 & 0xFF not in (0x00, 0xFF):
+            return True                                 # bras
+        return word_at(x - 4) == 0x6000                 # braw
+    for o in range(TEXT_LO, DATA_LO - 4, 2):
+        if word_at(o) & 0xF1FF != 0x41FA:
+            continue
+        d16 = word_at(o + 2)
+        x = o + 2 + (d16 - 0x10000 if d16 & 0x8000 else d16)
+        if not (TEXT_LO < x < DATA_LO) or x & 1 or x in islands or not flow_ends_at(x):
+            continue
+        e = x
+        while e < DATA_LO and img[e - BASE] in PRINTABLE:
+            e += 1
+        if img[e - BASE] != 0 or e - x < 3:
+            continue
+        end = (e + 2) & ~1                              # the string, NUL, word pad
+        islands[x] = (end - x, ascii_lines(x, end))
+        entries.add(end)
+
+    def in_island(t):
+        return in_island_raw(islands, t)
+
+    call_re = re.compile(r"^(jsr|bsr[swl]?|jmp|bra[swl]?)\s+(?:%pc@\()?0x([0-9a-f]+)\)?$")
+    jtab_re = re.compile(r"^jmp %pc@\(0x([0-9a-f]+),%d([0-7]):w\)")
+    cmp_re = re.compile(r"^cmpi?[bwl]\s+#(-?\d+),%d([0-7])$")
+    case_names = {}
+
+    for _ in range(8):
+        cuts = sorted(entries | {x + islands[x][0] for x in islands} | set(islands) | {DATA_LO})
+        insns = []
+        for lo, hi in zip(cuts, cuts[1:]):
+            if lo in islands or lo >= hi:
+                continue
+            insns.extend(disasm(lo, hi))
+        new = set()
+        for k, (addr, hx, txt) in enumerate(insns):
+            m = call_re.match(txt)
+            if m:
+                t = int(m.group(2), 16)
+                if TEXT_LO <= t < DATA_LO and not t & 1 and t not in entries and not in_island(t):
+                    new.add(t)
+                    if t not in names:
+                        names[t] = ("sub_%06x" if m.group(1).startswith(("jsr", "bsr"))
+                                    else "loc_%06x") % t
+            m = jtab_re.match(txt)
+            # A switch table only if the instruction before fetched its offset
+            # from the same table: `movew %pc@(T,%dR:w),%dR'.  A bare
+            # `jmp %pc@(T,%dR:w)' is a computed jump into code -- blts.s's
+            # unrolled copy loops do it -- and T is instructions, not data.
+            if m and k and not re.match(r"movew %%pc@\(0x%s,%%d[0-7]:w\),%%d%s$" % (m.group(1), m.group(2)),
+                                        insns[k - 1][2]):
+                m = None
+            if m and int(m.group(1), 16) not in islands:
+                tb, reg = int(m.group(1), 16), m.group(2)
+                # The bound is the `cmp #N,%dR; bhi default' a few
+                # instructions back: N+1 cases.  Without one, the table ends
+                # where the lowest case after it begins.
+                count = None
+                for j in range(k - 1, max(k - 7, -1), -1):
+                    c = cmp_re.match(insns[j][2])
+                    if c and c.group(2) == reg:
+                        count = int(c.group(1)) + 1
+                        break
+                lim, n, targets = DATA_LO, 0, []
+                while (n < count) if count else (tb + 2 * n < lim):
+                    off = word_at(tb + 2 * n)
+                    off = off - 0x10000 if off & 0x8000 else off
+                    t = tb + off
+                    if not (TEXT_LO <= t < DATA_LO) or t & 1:
+                        break
+                    targets.append(t)
+                    if t > tb:
+                        lim = min(lim, t)
+                    n += 1
+                if n:
+                    lines = []
+                    for i, t in enumerate(targets):
+                        case_names.setdefault(t, "case_%06x" % t)
+                        lines.append((2 * i, ".word 0x%04x                ; case %d -> %s"
+                                      % (word_at(tb + 2 * i), i, names.get(t, case_names[t]))))
+                    islands[tb] = (2 * n, lines)
+                    for t in targets:
+                        if t not in entries:
+                            new.add(t)
+                            names.setdefault(t, case_names[t])
+        if not new:
+            break
+        entries |= new
+
+    # This compiler opens every C function with `link %fp', so one that is
+    # reached only through a pointer -- a command table, a boot-device table
+    # -- is still found, and labelled fn_ rather than sub_.
+    for addr, hx, txt in insns:
+        if txt.startswith("linkw %fp,") and addr not in names:
+            names[addr] = "fn_%06x" % addr
+
+    def describe(v):
+        if v in names:
+            return names[v]
+        if v in strings:
+            s = cstr(strings[v])
+            return '"%s"' % (s if len(s) <= 60 else s[:57] + "...")
+        if v in ramnames:
+            return ramnames[v]
+        for lo, hi, n in windows:
+            if lo <= v < hi:
+                return n if v == lo else "%s+0x%x" % (n, v - lo)
+        return None
+
+    ref_re = re.compile(r"0x([0-9a-f]+)|#(-?\d+)")
+
+    def annotate(txt):
+        notes = []
+        for m in ref_re.finditer(txt):
+            v = int(m.group(1), 16) if m.group(1) else int(m.group(2)) & 0xFFFFFFFF
+            if m.group(2) is not None and v < 0x400:
+                continue                # small immediates are counts, not addresses
+            d = describe(v)
+            if d and d not in notes:
+                notes.append(d)
+        return notes
+
+    # Data addresses referenced from the text get labels.
+    data_refs = set()
+    for addr, hx, txt in insns:
+        for m in ref_re.finditer(txt):
+            v = int(m.group(1), 16) if m.group(1) else int(m.group(2)) & 0xFFFFFFFF
+            if DATA_LO <= v < FILL_LO:
+                data_refs.add(v)
+
+    # ---- write ------------------------------------------------------------
+    out = sys.stdout if a.out == "-" else open(a.out, "w", encoding="utf-8", newline="\n")
+    w = out.write
+    w("; Sun-2/50 / 2/160 boot PROM, Rev Q (VME, S2COLOR) -- annotated disassembly\n")
+    w("; generated by tools/promdis -- do not edit; add names to the symbols file\n")
+    w("; image   %s  sha256 %s\n" % (os.path.basename(a.prom), hashlib.sha256(img).hexdigest()))
+    w("; objdump %s, -m m68k:68010, vma 0x%06x\n" % (ver, BASE))
+    w(";\n; 0x%06x  ROM vector table (kernel/romvec.s)\n" % BASE)
+    w("; 0x%06x  text\n; 0x%06x  data and strings\n; 0x%06x  0xFF fill\n\n" % (TEXT_LO, DATA_LO, FILL_LO))
+
+    w("; ==== ROM vector table =================================================\n")
+    for i, (field, sym) in enumerate(ROMVEC):
+        ad = BASE + 4 * i
+        v = long_at(ad)
+        d = describe(v) if BASE <= v < PROM_HI else (sym or "")
+        w("%06x:  .long 0x%08x    ; +0x%02x %-16s %s\n" % (ad, v, 4 * i, field, d or ""))
+    ad = BASE + 4 * len(ROMVEC)
+    w("\nbootaddr:\n%06x:  .long 0x%08x    ; boot parameters live here (romvec.s)\n" % (ad, long_at(ad)))
+
+    w("\n; ==== text ==============================================================\n")
+    rows = list(insns)
+    for tb, (ln, lines) in islands.items():
+        offs = [o for o, _ in lines] + [ln]
+        for (o, l), nxt in zip(lines, offs[1:]):
+            b = img[tb + o - BASE:tb + min(nxt, o + 6) - BASE]
+            hx = " ".join(b[i:i + 2].hex() for i in range(0, len(b), 2))
+            rows.append((tb + o, hx + ("..." if nxt - o > 6 else ""), l))
+    rows.sort()
+    for addr, hx, txt in rows:
+        if addr in names:
+            n = names[addr]
+            note = syms.get(addr, ("", ""))[1]
+            w("\n%s:%s\n" % (n, ("    ; " + note) if note else ""))
+        elif addr in syms:
+            w("                                            ; ---- %s: %s\n" % (syms[addr][0], syms[addr][1]))
+        notes = [] if txt.startswith(".word") else annotate(txt)
+        line = "%06x:  %-22s %s" % (addr, hx, txt)
+        if notes:
+            line = "%-72s ; %s" % (line, ", ".join(notes))
+        w(line.rstrip() + "\n")
+
+    w("\n; ==== data ==============================================================\n")
+    ad = DATA_LO
+    while ad < FILL_LO:
+        if ad in names or ad in data_refs:
+            n = names.get(ad, "dat_%06x" % ad)
+            note = syms.get(ad, ("", ""))[1]
+            w("\n%s:%s\n" % (n, ("    ; " + note) if note else ""))
+        if ad in strings:
+            s = strings[ad]
+            w('%06x:  .ascii "%s\\0"\n' % (ad, cstr(s)))
+            ad += len(s) + 1
+            continue
+        # A longword that points at something known -- a function, a string,
+        # a device -- is a table entry: show it as one, resolved.
+        if not ad & 1 and ad + 4 <= FILL_LO:
+            v = long_at(ad)
+            d = describe(v) if v >= 0x400 else None
+            if d and not any(t in strings or t in names or t in data_refs for t in range(ad + 1, ad + 4)):
+                w("%06x:  .long 0x%08x    ; %s\n" % (ad, v, d))
+                ad += 4
+                continue
+        # words up to the next string, label or resolvable long, eight to a line
+        stop = ad + 16
+        for t in range(ad + 1, stop):
+            if t in strings or t in names or t in data_refs or t >= FILL_LO:
+                stop = t
+                break
+            if not t & 1 and t + 4 <= FILL_LO and long_at(t) >= 0x400 and describe(long_at(t)):
+                stop = t
+                break
+        chunk = img[ad - BASE:stop - BASE]
+        if ad & 1 or len(chunk) & 1:
+            w("%06x:  .byte %s\n" % (ad, ", ".join("0x%02x" % c for c in chunk)))
+        else:
+            ws = [int.from_bytes(chunk[i:i + 2], "big") for i in range(0, len(chunk), 2)]
+            w("%06x:  .word %s\n" % (ad, ", ".join("0x%04x" % x for x in ws)))
+        ad = stop
+
+    tail = img[FILL_LO - BASE:]
+    w("\n; ==== fill ==============================================================\n")
+    if all(c == 0xFF for c in tail):
+        w("%06x:  .fill %d, 1, 0xff\n" % (FILL_LO, len(tail)))
+    else:
+        w("; WARNING: the tail is not all 0xFF -- this is not the image promdis was written for\n")
+    if out is not sys.stdout:
+        out.close()
+
+
+if __name__ == "__main__":
+    main()

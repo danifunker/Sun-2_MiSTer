@@ -24,7 +24,7 @@ PROM    = $(TOP)/Inputs/sun2-multi-rev-R.bin
 # currently wired as a MultiBus 2/120.  Used pristine: the speedup patches are
 # addresses and opcodes specific to the MultiBus image, and rompatch refuses to
 # apply them here, which is exactly what it is for.
-PROM250 = $(TOP)/Inputs/sun250_prom_combined.bin
+PROM250 = $(TOP)/Inputs/boot0.rom
 
 CC     ?= cc
 CFLAGS ?= -O2 -Wall

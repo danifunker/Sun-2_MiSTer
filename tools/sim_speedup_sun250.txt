@@ -1,4 +1,4 @@
-# Patches applied to sun250_prom_combined.bin to make simulation tractable.
+# Patches applied to Inputs/boot0.rom to make simulation tractable.
 #
 # The same two changes sim_speedup.txt makes to the MultiBus PROM, at the
 # addresses this one uses.  Unlike that file these are not reproducing any

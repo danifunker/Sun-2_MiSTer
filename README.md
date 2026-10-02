@@ -142,7 +142,7 @@ The sources under `Inputs/`:
   island to feed. `patches/hdmi/0001` adds the 1280×1024 mode the full design
   can actually clock. The DECA has a transmitter chip and does not use it.
 * `sun2-multi-rev-R.bin` — Rev R boot PROM of a MultiBus Sun 2/120.
-* `sun250_prom_combined.bin` — boot PROM of a VME Sun 2/50, used by
+* `Inputs/boot0.rom` — boot PROM of a VME Sun 2/50, used by
   `MACHINE=vme` (see [Which machine](#which-machine)).
 * `doc/` — the Sun-2 Architecture Manual, the Sun 2/50 schematic and
   engineering manual, the 2/120 video board engineering manual, the Xylogics
@@ -285,7 +285,7 @@ includes. For the MultiBus `sun2-multi-rev-R.bin`, in three flavours:
   it for full-system or memory-related validation.
 * **pristine** (`ROM=pristine`) — the PROM exactly as dumped.
 
-The VME `sun250_prom_combined.bin` gets the same treatment minus fastboot:
+The VME `Inputs/boot0.rom` gets the same treatment minus fastboot:
 patched by default per `tools/sim_speedup_sun250.txt`, or pristine with
 `ROM=pristine`. The two shared patch sites are at different addresses, and the
 delay loop needed care — `movel #50000,%d0` appears twice with byte-identical
@@ -327,7 +327,7 @@ either. One define picks it, and everything machine-dependent follows:
 | Model | 2/120, 2/170 | 2/50, 2/160 |
 | "Machine Type" | 1 | 2 |
 | System bus | MultiBus / IEEE-796 | VME |
-| Boot PROM | `Inputs/sun2-multi-rev-R.bin` | `Inputs/sun250_prom_combined.bin` |
+| Boot PROM | `Inputs/sun2-multi-rev-R.bin` | `Inputs/boot0.rom` |
 | `DEV_PAGE_BASE` | 0 (page 0x000) | 4064 (page 0xFE0) |
 | `MEM_SPACE_PAGES` | 3584 (7 MiB) | 4096 (8 MiB) |
 | `IDPROM_MACHINE_TYPE` | 1 | 2 |

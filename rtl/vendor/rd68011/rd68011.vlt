@@ -1,0 +1,48 @@
+// SPDX-FileCopyrightText: 2026 Romain Dolbeau <romain@dolbeau.org>
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Source location: https://github.com/MelkhiorVintageComputing/RD68011
+`verilator_config
+
+// Lint configuration for the RD68011 RTL.
+//
+// Two gotchas, both hit while writing this file: the `verilator_config
+// directive must be the first token, and no comment may begin with the word
+// "verilator" -- such comments are parsed as directives, not comments.
+//
+// Only two waivers, both narrow:
+//
+//  * UNUSEDPARAM on the two packages. Both are catalogues of constants -- one
+//    of the architecture's vector numbers, function codes and frame formats,
+//    the other of every microword field encoding the assembler can emit -- and
+//    most are legitimately unused by any single module, or used only by
+//    microcode that has not been written yet. Waiving it here does not hide
+//    unused parameters in the modules themselves.
+//
+//  * UNUSEDSIGNAL on the deliberate unused-input sink in the top level, which
+//    exists precisely to name inputs the design does not consume yet.
+//
+// Everything else runs at -Wall. If a new waiver is needed, it goes here with
+// a reason, never as an inline lint_off in the RTL.
+
+lint_off -rule UNUSEDPARAM -file "*rtl/rd68011_pkg.sv"
+lint_off -rule UNUSEDPARAM -file "*rtl/gen/rd68011_ucode_pkg.sv"
+// The opcode decoder is an ordered list of bit patterns and the order is
+// deliberate: BRA.W is BRA.B with a displacement byte of zero, and putting the
+// narrower pattern first is how they are told apart without a run-time test.
+// Overlap is the mechanism, not a mistake. tools/ucode/assemble.py still fails
+// the build on a pattern that is *completely* shadowed, which would be one.
+lint_off -rule CASEOVERLAP -file "*rtl/gen/rd68011_decode_rom.sv"
+
+lint_off -rule UNUSEDSIGNAL -file "*rtl/rd68011_top.sv" -match "*unused_biu*"
+
+// A horizontal microword is read by several consumers and no consumer reads
+// all of it: the current microword supplies the datapath control, the next one
+// supplies only the bus request. Bits unused today are also bits the microcode
+// has not started using yet, so this will loosen rather than tighten.
+lint_off -rule UNUSEDSIGNAL -file "*rtl/rd68011_seq.sv" -match "*'uw'*"
+lint_off -rule UNUSEDSIGNAL -file "*rtl/rd68011_seq.sv" -match "*'uw_nxt'*"
+
+// Addresses are computed 32 bits wide and the part has 23 address pins: the
+// top eight bits go nowhere, and bit 0 picks the byte lane through UDS/LDS
+// rather than reaching a pin at all (UM 3.1, table 3-1).
+lint_off -rule UNUSEDSIGNAL -file "*rtl/rd68011_seq.sv" -match "*'n_addr'*"

@@ -1,0 +1,62 @@
+# Names for tools/promdis, for the Rev Q VME boot PROM (Inputs/boot0.rom).
+#
+#   <hex address> <name> [size=<bytes>] [; note]
+#
+# A size makes the name a window: any address inside it is shown as
+# name+offset.  The ROM vector table's names (kernel/romvec.s) are built into
+# promdis and need not be repeated here.  Every entry says where it came from;
+# add to this file as names are established, and never guess one in.
+
+# ---- device virtual addresses, sys/mon/s2addrs.h ------------------------------
+# The monitor maps devices at fixed virtual addresses; these are what its code
+# uses, not the physical ones.
+ea8000 INVPMEG_BASE                 ; s2addrs.h
+eb0000 BUSIO_BASE      size=0x10000 ; s2addrs.h, = MBIO_BASE
+ec0000 VIDEOMEM_BASE   size=0x20000 ; s2addrs.h: bwtwo memory, or cgtwo plane 0 after init_scolor's colorzap
+ee0000 TIMER_BASE      size=0x800   ; s2addrs.h: Am9513
+ee0800 ROP_BASE        size=0x800   ; s2addrs.h: rasterop chip
+ee1000 CLOCK_BASE      size=0x800   ; s2addrs.h: MM58167
+ee1800 DES_BASE        size=0x800   ; s2addrs.h
+ee2000 PARALLEL_BASE   size=0x800   ; s2addrs.h
+ee2800 SCSI_BASE       size=0x800   ; s2addrs.h
+ee3000 ETHER_BASE      size=0x800   ; s2addrs.h: on-board 82586 control
+ee3800 VIDEOCTL_BASE   size=0x800   ; s2addrs.h: bwtwo control register (holds the colour jumper)
+eec000 KEYBMOUSE_BASE  size=0x800   ; s2addrs.h: keyboard/mouse Z8530
+eec800 SERIAL0_BASE    size=0x800   ; s2addrs.h: console Z8530
+f00000 BUSMEM_BASE     size=0x100000 ; s2addrs.h, = MBMEM_BASE
+
+# ---- monitor globals, sys/mon/globram.h -----------------------------------------
+# Only those pinned by the ROM vector table, or lying between two that are.
+5b6    g_debounce                   ; globram.h: between g_outsink (0x5b5) and g_echo (0x5b7), both from romvec
+
+# ---- landmarks inside functions, tools/sim_speedup_sun250.txt -------------------
+ef0b62 L_ledwalk                    ; LED walk: movew #32767,%d7, then movesb to the LEDs and a 50000-count delay (patched to 2 for simulation; the patch file's comment puts these 4 bytes late)
+ef0e62 L_memtest                    ; entry of the destructive main-memory test (skipped by the simulation patch)
+ef4010 L_iereset_poll               ; iereset() ISCP busy poll, cmpil #100000 (sys/sunif/if_ie.c)
+ef4d3c L_ndread_limit               ; ndread() retry limit: movel #500,%fp@(-16), the patched word at ef4d40 (mon/prom2/nd.c)
+
+# ---- data inside the text, declared because nothing finds it mechanically -----
+ef354e T_fwritestr_ctrl data=10     ; _fwritestr's switch on a control character, as a search table: DEL ESC CR FF VT LF TAB BS BEL, then a pad byte (dpy/fwritestr.c)
+
+# ---- functions identified against the PROM source -------------------------------
+# Matched call by call against the SunOS 3.4 source of the RevQs build: the
+# order of calls, their arguments and the constants between them.
+ef3118 _finit                       ; dpy/finit.c: sets video enable, g_fbtype=2, tests the colour jumper (btst #1,0xee3800 = bit 9), calls init_scolor, g_fbtype=3 on success
+ef3d34 _init_scolor                 ; dpy/scutils.c: probe cgtwo status with poke(), load the colour map (even white, odd black), wait out a retrace, clear zoom/pan, enable video, map plane 0 at VIDEOMEM_BASE
+ef0acc _getusercontext              ; called first by init_scolor (scutils.c), result saved
+ef0aea _getsupcontext               ; init_scolor: setusercontext(getsupcontext())
+ef0b08 _setusercontext              ; init_scolor, and again on the way out
+ef0a1c _getpgmap                    ; init_scolor: oldpgmap = getpgmap(reg)
+ef0a60 _setpgmap                    ; init_scolor: setpgmap(reg, PME_COLOR_*) -- (address, entry)
+ef2d18 _poke                        ; init_scolor: poke(reg, 0), nonzero on a bus error = no colour board
+
+# ---- page-map entry values (kernel/genassym.c, PME_COLOR_*) -------------------
+# Not addresses: the entries init_scolor writes to reach the cgtwo.  Each is
+# valid, supervisor+user read/write, type 2 (VME), and its page number is the
+# VME address >> 11 -- base 0x400000 plus the cg2reg.h struct cg2fb offset.
+ec800e12 PME_COLOR_STAT             ; page 0xe12 = VME 0x709000: status register (cg2fb.status)
+ec800e16 PME_COLOR_WPAN             ; page 0xe16 = VME 0x70b000: word pan
+ec800e18 PME_COLOR_ZOOM             ; page 0xe18 = VME 0x70c000: zoom and line offset
+ec800e1a PME_COLOR_PPAN             ; page 0xe1a = VME 0x70d000: pixel pan
+ec800e1c PME_COLOR_VZOOM            ; page 0xe1c = VME 0x70e000: variable zoom
+ec800e20 PME_COLOR_MAPS             ; page 0xe20 = VME 0x710000: red, green, blue shadow maps (u_short x 256 each)
