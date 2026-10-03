@@ -94,6 +94,23 @@ The serial console is the MiSTer UART at 9600 baud. With the frame buffer
 fitted the PROM puts its console on the screen and keyboard, as a real Sun
 does.
 
+### The picture
+
+The Sun's screen is 1152×900, and the core sends it as 1160×904: the screen
+and a thin black border. **Give the Sun-2 a 1080p (or 1280×1024) output.**
+MiSTer's default, 1280×720, has fewer lines than the Sun's screen, so the
+scaler has to shrink it, and a shrunk one-pixel font cannot look right: strokes
+come out uneven, SunView's grey background turns into stripes, and the scaler
+leaves a dotted column down the right-hand edge. At 1080p the default *Scale*,
+V-Integer, shows each Sun pixel as exactly one screen pixel, in a border. In
+`MiSTer.ini`:
+
+    [Sun-2]
+    video_mode=8        ; 1920x1080@60
+
+`video_mode=4` (1280×1024@60) suits a 5:4 monitor, with the picture 1:1 and a
+narrow border.
+
 ### Logging in, and SunView
 
 An installed disk boots by itself. The OSD remembers the image you last chose
@@ -120,18 +137,18 @@ a password with `passwd name`; 4.0 has no `adduser`.
 It takes over the screen and opens its default windows: a console window, a
 shell, a clock and the mail icon.
 
-**The mouse does not work yet.** A USB mouse on the MiSTer is meant to be the
-Sun's mouse, and the core sends its movements to the Sun as a Sun mouse would,
-but the pointer does not move -- this is the next thing being fixed. Until it
-is, SunView starts and shows its windows and nothing more: the pointer stays
-where it starts, over the background, so typing reaches no window, and
-nothing can be clicked or chosen from a menu. L1-A still gets you out.
+**A USB mouse on the MiSTer is the Sun's mouse.** The core sends it to the Sun
+as a Mouse Systems mouse on the keyboard SCC's second channel, at 1200 baud,
+which is what SunOS's `ms` driver reads. 1200 baud carries about 24 reports a
+second, so the core accumulates motion between them as a real mouse does: none
+is lost at an ordinary pace, a very fast flick is cut short rather than leaving
+the pointer coasting, and every button press and release arrives in order.
 
-With a working mouse: typing goes to the window under the pointer, and holding
-the **right** button over the grey background brings up the root menu -- more
-shells and tools, and **Exit Suntools**, which asks for a click to confirm and
-returns you to the plain console. To start SunView at every login on the
-screen, but not on the serial port, add this to root's `/.login`:
+Typing goes to the window under the pointer, and holding the **right** button
+over the grey background brings up the root menu -- more shells and tools, and
+**Exit Suntools**, which asks for a click to confirm and returns you to the
+plain console. To start SunView at every login on the screen, but not on the
+serial port, add this to root's `/.login`:
 
     if ( "`tty`" == "/dev/console" ) suntools
 
@@ -142,6 +159,14 @@ anything; `c` there carries on where it left off. Stop it any other way and the
 next boot may find `/usr` damaged and stop in single user with `Reboot
 failed...help!`; [doc/install-sunos.md](doc/install-sunos.md) has the three
 commands that put it right -- and not `/etc/halt`, which undoes the repair.
+
+**`SUMMARY INFORMATION BAD (SALVAGED)` and `Mounted FS fixed - rebooting`
+after loading the core are the clock, not the disk.** The Sun's clock does not
+yet come from the MiSTer: every time the core is loaded it starts again at the
+same moment in December 1988, earlier than the times the last session wrote
+into the filesystems, and SunOS's `fsck` corrects any "future" timestamp and
+reports it this way. Nothing is lost, and the machine reboots once by itself.
+A reset or `b` at the monitor keeps the clock running and does not do it.
 
 ### The keyboard
 

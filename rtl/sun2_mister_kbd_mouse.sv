@@ -31,9 +31,22 @@
 //
 // Mouse.  Mouse Systems five-byte packets, as sun/sys/sundev/ms.c reads them:
 // 0x80 | the three buttons active low (left 4, middle 2, right 1), then dx,
-// dy, and a second dx, dy of zero.  Up is positive, as on PS/2 -- ms.c does
-// `mi_y -= c' -- so Y is passed through, not inverted.  Deltas are clamped to
-// -112..127, because ms.c takes any byte 0x80..0x8F for a button byte.
+// dy, and a second dx, dy.  Up is positive, as on PS/2 -- ms.c does
+// `mi_y -= c' -- so Y is passed through, not inverted.  Each delta is kept to
+// -112..127, because ms.c takes any byte 0x80..0x8F for a button byte, and the
+// two of a packet together to -128..127, because ms.c adds them into one
+// clipped byte.
+//
+// The mouse is sent the way a Mouse Systems mouse sends, not event by event.
+// Main_MiSTer sends up to ~66 events a second and 1200 baud carries 24
+// packets, so a packet per event cannot keep up: queued, it lags; dropped, it
+// loses distance and clicks.  Motion is accumulated instead and drained into a
+// packet whenever the line is free, the second dx, dy carrying what built up
+// while the first three bytes went out.  Each change of the buttons is kept and
+// sent in order, so a click made while moving is never merged away.  The
+// backlog is capped at about two packets of motion: past that a fast flick is
+// cut short, as a real mouse's counters would cut it, rather than the pointer
+// coasting on after the hand has stopped.
 //
 // Everything runs on one clock.  ps2_key and ps2_mouse come from hps_io's
 // clock; their toggle bits are synchronised here and the rest of each word is
@@ -333,49 +346,109 @@ module sun2_mister_kbd_mouse #(
     end
 
     // ---- mouse: the one writer of its FIFO ----------------------------------------
-    function automatic [7:0] clamp(input sign, input [7:0] mag);
-        logic signed [9:0] v;
-        v = $signed({sign, sign, mag});
-        if (v > 10'sd127)       clamp = 8'd127;
-        else if (v < -10'sd112) clamp = 8'h90;          // -112
-        else                    clamp = v[7:0];
+    // Motion builds up in acc_x/acc_y, capped at +-ACC_MAX; button states wait
+    // in bq, oldest in bq[2:0], up to four of them.  A packet starts only when
+    // the FIFO is empty -- the line is about to fall idle -- and takes the
+    // first three bytes; its dx2, dy2 are taken when those have gone too.
+    localparam logic signed [12:0] ACC_MAX = 13'sd255;   // about two packets of motion
+
+    function automatic signed [12:0] lim(input signed [12:0] v,
+                                         input signed [12:0] lo, input signed [12:0] hi);
+        lim = (v > hi) ? hi : (v < lo) ? lo : v;
     endfunction
 
-    reg [2:0] ms_s  = 3'd0;
-    reg       ms_seen = 1'b0;
-    reg [2:0] mleft = 3'd0;             // packet bytes still to send
-    reg [7:0] mb0 = 8'h87, mb1 = 8'h0, mb2 = 8'h0;
-    reg       mpush = 1'b0;
-    reg [7:0] mdata = 8'h0;
+    reg [2:0]         ms_s  = 3'd0;
+    reg               ms_seen = 1'b0;
+    reg signed [12:0] acc_x = 13'sd0, acc_y = 13'sd0;
+    reg signed [12:0] dx1 = 13'sd0, dy1 = 13'sd0;   // the first half, for the second's limits
+    reg [2:0]         btn_new = 3'b000;              // {L, M, R}, 1 = down, as last seen
+    reg [11:0]        bq = 12'd0;
+    reg [2:0]         bq_n = 3'd0;
+    reg               second = 1'b0;                 // dx2, dy2 still to be taken
+    reg [1:0]         npend = 2'd0;                  // bytes in pend0.. still for the FIFO
+    reg [7:0]         pend0 = 8'h0, pend1 = 8'h0, pend2 = 8'h0;
+    reg               mpush = 1'b0;
+    reg [7:0]         mdata = 8'h0;
     assign m_push  = mpush;
     assign m_pdata = mdata;
+
+    reg signed [12:0] ax, ay, ex, ey, hx, hy;        // temporaries, assigned blocking
+    reg [11:0]        q;
+    reg [2:0]         qn, eb, pb;
 
     always @(posedge clk) begin
         ms_s  <= {ms_s[1:0], ps2_mouse[24]};
         mpush <= 1'b0;
         if (rst) begin
-            mleft   <= 3'd0;
             ms_seen <= ms_s[2];
+            acc_x   <= 13'sd0;
+            acc_y   <= 13'sd0;
+            btn_new <= 3'b000;
+            bq_n    <= 3'd0;
+            second  <= 1'b0;
+            npend   <= 2'd0;
         end else begin
-            // a whole packet or none: one that would not fit is dropped
-            if (ms_s[2] != ms_seen && mleft == 0) begin
+            ax = acc_x;  ay = acc_y;  q = bq;  qn = bq_n;
+
+            // an event from MiSTer: add its motion, keep its buttons if new
+            if (ms_s[2] != ms_seen) begin
                 ms_seen <= ms_s[2];
+                ex = {{4{ps2_mouse[4]}}, ps2_mouse[4], ps2_mouse[15:8]};
+                ey = {{4{ps2_mouse[5]}}, ps2_mouse[5], ps2_mouse[23:16]};
+                ax = lim(ax + ex, -ACC_MAX, ACC_MAX);
+                ay = lim(ay + ey, -ACC_MAX, ACC_MAX);
+                eb = {ps2_mouse[0], ps2_mouse[2], ps2_mouse[1]};
+                if (eb != btn_new) begin
+                    btn_new <= eb;
+                    if (qn != 3'd4) begin
+                        q[qn*3 +: 3] = eb;
+                        qn = qn + 3'd1;
+                    end else
+                        q[9 +: 3] = eb;             // four changes in one packet: keep the newest
+                end
             end
-            if (ms_s[2] != ms_seen && mleft == 0 && m_room >= 7'd5) begin
-                mb0   <= {5'b10000, ~ps2_mouse[0], ~ps2_mouse[2], ~ps2_mouse[1]};
-                mb1   <= clamp(ps2_mouse[4], ps2_mouse[15:8]);
-                mb2   <= clamp(ps2_mouse[5], ps2_mouse[23:16]);
-                mleft <= 3'd5;
-            end else if (mleft != 0 && !mpush) begin
+
+            if (npend != 2'd0) begin
+                // one byte a clock into the FIFO
                 mpush <= 1'b1;
-                case (mleft)
-                    3'd5: mdata <= mb0;
-                    3'd4: mdata <= mb1;
-                    3'd3: mdata <= mb2;
-                    default: mdata <= 8'h00;        // the second dx, dy
-                endcase
-                mleft <= mleft - 3'd1;
+                mdata <= pend0;
+                pend0 <= pend1;
+                pend1 <= pend2;
+                npend <= npend - 2'd1;
+            end else if (!mpush && m_room == 7'd64) begin
+                if (second) begin
+                    // dx2, dy2: whatever built up meanwhile, keeping the
+                    // packet's total within the byte ms.c adds it into
+                    hx = lim(ax, (dx1 < 0) ? (-13'sd128 - dx1) : -13'sd112, 13'sd127 - dx1);
+                    hy = lim(ay, (dy1 < 0) ? (-13'sd128 - dy1) : -13'sd112, 13'sd127 - dy1);
+                    hx = lim(hx, -13'sd112, 13'sd127);
+                    hy = lim(hy, -13'sd112, 13'sd127);
+                    ax = ax - hx;  ay = ay - hy;
+                    pend0  <= hx[7:0];
+                    pend1  <= hy[7:0];
+                    npend  <= 2'd2;
+                    second <= 1'b0;
+                end else if (qn != 3'd0 || ax != 13'sd0 || ay != 13'sd0) begin
+                    if (qn != 3'd0) begin
+                        pb = q[2:0];
+                        q  = q >> 3;
+                        qn = qn - 3'd1;
+                    end else
+                        pb = btn_new;
+                    hx = lim(ax, -13'sd112, 13'sd127);
+                    hy = lim(ay, -13'sd112, 13'sd127);
+                    ax = ax - hx;  ay = ay - hy;
+                    dx1    <= hx;
+                    dy1    <= hy;
+                    pend0  <= {5'b10000, ~pb};
+                    pend1  <= hx[7:0];
+                    pend2  <= hy[7:0];
+                    npend  <= 2'd3;
+                    second <= 1'b1;
+                end
             end
+
+            acc_x <= ax;  acc_y <= ay;  bq <= q;  bq_n <= qn;
         end
     end
 

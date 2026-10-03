@@ -79,20 +79,46 @@ task automatic key(input bit press, input bit ext, input [7:0] code);
     end
 endtask
 
-task automatic mouse(input [2:0] btn_lrm, input int dx, input int dy);
+task automatic mouse(input [2:0] btn_lmr, input int dx, input int dy);
     bit [8:0] x, y;
     begin
         x = 9'(dx); y = 9'(dy);
         @(negedge clk);
         // status: [0] left, [1] right, [2] middle, [4] X sign, [5] Y sign
         ps2_mouse = {~ps2_mouse[24], y[7:0], x[7:0], 2'b00, y[8], x[8], 1'b1,
-                     btn_lrm[1], btn_lrm[0], btn_lrm[2]};
+                     btn_lmr[1], btn_lmr[0], btn_lmr[2]};
         repeat (BT * 12 * 6) @(posedge clk);
+    end
+endtask
+
+// One event and no wait: for streams faster than the line.
+task automatic mouse_now(input [2:0] btn_lmr, input int dx, input int dy);
+    bit [8:0] x, y;
+    begin
+        x = 9'(dx); y = 9'(dy);
+        @(negedge clk);
+        ps2_mouse = {~ps2_mouse[24], y[7:0], x[7:0], 2'b00, y[8], x[8], 1'b1,
+                     btn_lmr[1], btn_lmr[0], btn_lmr[2]};
     end
 endtask
 
 task automatic drain(input int bytes_time);
     repeat (BT * 11 * bytes_time) @(posedge clk);
+endtask
+
+// What ms.c makes of the mouse line so far: packets well formed, the total
+// motion (Y as ms.c turns it, down positive), and the button byte of each.
+task automatic decode_m(output bit ok, output int sx, output int sy, output string btns);
+    begin
+        ok = (mq.size() % 5 == 0);
+        sx = 0; sy = 0; btns = "";
+        for (int i = 0; i + 4 < mq.size(); i += 5) begin
+            if ((mq[i] & 8'hF8) != 8'h80) ok = 0;
+            sx += $signed(mq[i+1]) + $signed(mq[i+3]);
+            sy -= $signed(mq[i+2]) + $signed(mq[i+4]);
+            if (i == 0 || mq[i] != mq[i-5]) btns = {btns, $sformatf(" %02x", mq[i])};
+        end
+    end
 endtask
 
 task automatic expect_k(input bit [7:0] e [], input string what);
@@ -192,13 +218,74 @@ initial begin
     drain(4);
     expect_k('{}, "a glitch is not a byte");
 
-    // mouse: {L, R, M}
+    // mouse: {L, M, R}
     mouse(3'b100, 5, 3);
     expect_m('{8'h83, 8'h05, 8'h03, 8'h00, 8'h00}, "left button down, dx 5, dy 3 (up positive)");
     mouse(3'b000, -7, -2);
     expect_m('{8'h87, 8'hF9, 8'hFE, 8'h00, 8'h00}, "no buttons, dx -7, dy -2");
+    // More than a packet holds: each delta within -112..127, a packet's two
+    // together within -128..127, and the rest in the next packet, not lost.
     mouse(3'b011, -200, 200);
-    expect_m('{8'h84, 8'h90, 8'h7F, 8'h00, 8'h00}, "right and middle, dx clamped to -112, dy to 127");
+    drain(6);
+    expect_m('{8'h84, 8'h90, 8'h7F, 8'hF0, 8'h00, 8'h84, 8'hB8, 8'h49, 8'h00, 8'h00},
+             "right and middle, -200 and 200 split over two packets, none lost");
+    mouse(3'b001, 1, -1);
+    expect_m('{8'h86, 8'h01, 8'hFF, 8'h00, 8'h00}, "right alone is 1, not the middle's 2");
+
+    // A stream of events faster than a packet each -- Main sends up to ~66 a
+    // second against the line's 24 packets -- loses no motion.
+    begin
+        bit ok; int sx, sy; string b;
+        for (int i = 0; i < 30; i++) begin
+            mouse_now(3'b000, 10, -4);
+            repeat (BT * 10) @(posedge clk);            // one byte time apart
+        end
+        drain(20);
+        decode_m(ok, sx, sy, b);
+        check(ok && sx == 300 && sy == 120,
+              $sformatf("30 events a byte time apart: every count arrives (x %0d of 300, y %0d of 120, %0d bytes)",
+                        sx, sy, mq.size()));
+        check(mq.size() < 30 * 5, $sformatf("... in fewer packets than events (%0d bytes)", mq.size()));
+        mq.delete();
+    end
+
+    // A click in the middle of motion: the press and the release both reach
+    // the Sun, in order, even when they come closer together than a packet.
+    begin
+        bit ok; int sx, sy; string b;
+        for (int i = 0; i < 8; i++) begin
+            mouse_now(3'b000, 6, 0);
+            repeat (BT * 10) @(posedge clk);
+        end
+        mouse_now(3'b100, 0, 0);                        // left down
+        repeat (BT * 3) @(posedge clk);
+        mouse_now(3'b000, 0, 0);                        // and up again, a third of a byte later
+        repeat (BT * 10) @(posedge clk);
+        for (int i = 0; i < 8; i++) begin
+            mouse_now(3'b000, 6, 0);
+            repeat (BT * 10) @(posedge clk);
+        end
+        drain(20);
+        decode_m(ok, sx, sy, b);
+        check(ok && b == " 87 83 87" && sx == 96,
+              $sformatf("a click while moving: buttons%s, want 87 83 87; x %0d of 96", b, sx));
+        mq.delete();
+    end
+
+    // A fast flick: the backlog is capped, so the pointer stops soon after
+    // the hand does instead of coasting on.
+    begin
+        int at_stop;
+        for (int i = 0; i < 20; i++) begin
+            mouse_now(3'b000, 250, 0);
+            repeat (BT * 10) @(posedge clk);
+        end
+        at_stop = mq.size();
+        drain(40);
+        check(mq.size() - at_stop <= 20,
+              $sformatf("a flick: %0d bytes after the last event, at most four packets", mq.size() - at_stop));
+        mq.delete();
+    end
 
     check(framing == 0, $sformatf("%0d bytes with a bad stop bit", framing));
 

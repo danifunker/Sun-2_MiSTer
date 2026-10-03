@@ -15,7 +15,15 @@
 #     ~    a half-second pause
 #     {^X}    Control-X
 #     {NAME}  one key by name: {F12} {ESC} {UP} {DOWN} {LEFT} {RIGHT} {ENTER}
-#             {BS} {DEL} {TAB} {F1}..{F11}
+#             {BS} {DEL} {TAB} {F1}..{F11}, and {PIPE} for a `|'
+#
+# and, through a second virtual device -- a USB mouse, created only when the
+# text uses one of these:
+#
+#     {M dx dy}   move the mouse by dx, dy counts (right and down positive,
+#                 as Linux reports them), in steps of at most 8
+#     {ML} {MM} {MR}         click the left, middle or right button
+#     {ML+} {ML-} ...        press or release one, for a drag
 #
 # Letters, digits, space and . / - , = ; ' and their shifted forms are typed
 # as themselves.  Python 3 standard library only; MiSTer's Linux is 32-bit ARM.
@@ -26,8 +34,10 @@ import struct
 import sys
 import time
 
-EV_SYN, EV_KEY = 0, 1
-UI_SET_EVBIT, UI_SET_KEYBIT = 0x40045564, 0x40045565
+EV_SYN, EV_KEY, EV_REL = 0, 1, 2
+REL_X, REL_Y = 0, 1
+BTN = {"L": 0x110, "R": 0x111, "M": 0x112}
+UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_RELBIT = 0x40045564, 0x40045565, 0x40045566
 UI_DEV_CREATE, UI_DEV_DESTROY = 0x5501, 0x5502
 
 KEY = {c: n for n, c in enumerate("1234567890", 2)}
@@ -44,24 +54,52 @@ NAMED.update({f"F{i}": 58 + i for i in range(1, 11)})
 LSHIFT, RALT, LCTRL = 42, 100, 29
 
 
-def main():
-    text = sys.argv[1] if len(sys.argv) > 1 else ""
+def uinput_device(name, product, evbits, keybits, relbits=()):
     fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
-    fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
-    for code in range(1, 128):
+    for ev in evbits:
+        fcntl.ioctl(fd, UI_SET_EVBIT, ev)
+    for code in keybits:
         fcntl.ioctl(fd, UI_SET_KEYBIT, code)
+    for code in relbits:
+        fcntl.ioctl(fd, UI_SET_RELBIT, code)
     # struct uinput_user_dev: name[80], input_id, ff_effects_max, 4 x abs[64]
-    dev = struct.pack("80sHHHHI", b"sun2-remote-keyboard", 3, 0x1234, 0x5678, 1, 0)
+    dev = struct.pack("80sHHHHI", name, 3, 0x1234, product, 1, 0)
     os.write(fd, dev + bytes(4 * 64 * 4))
     fcntl.ioctl(fd, UI_DEV_CREATE)
+    return fd
+
+
+def main():
+    text = sys.argv[1] if len(sys.argv) > 1 else ""
+    fd = uinput_device(b"sun2-remote-keyboard", 0x5678, [EV_KEY], range(1, 128))
+    mfd = None
+    if "{M" in text:
+        mfd = uinput_device(b"sun2-remote-mouse", 0x5679, [EV_KEY, EV_REL],
+                            BTN.values(), [REL_X, REL_Y])
     time.sleep(2.0)                     # Main_MiSTer notices new input devices by polling
 
-    def emit(code, value):
+    def emit(code, value, dev=None, etype=EV_KEY):
         t = time.time()
         sec, usec = int(t), int((t % 1) * 1e6)
-        os.write(fd, struct.pack("llHHi", sec, usec, EV_KEY, code, value))
-        os.write(fd, struct.pack("llHHi", sec, usec, EV_SYN, 0, 0))
+        f = fd if dev is None else dev
+        os.write(f, struct.pack("llHHi", sec, usec, etype, code, value))
+        os.write(f, struct.pack("llHHi", sec, usec, EV_SYN, 0, 0))
         time.sleep(0.04)
+
+    def move(dx, dy):
+        while dx or dy:
+            sx = max(-8, min(8, dx))
+            sy = max(-8, min(8, dy))
+            t = time.time()
+            sec, usec = int(t), int((t % 1) * 1e6)
+            if sx:
+                os.write(mfd, struct.pack("llHHi", sec, usec, EV_REL, REL_X, sx))
+            if sy:
+                os.write(mfd, struct.pack("llHHi", sec, usec, EV_REL, REL_Y, sy))
+            os.write(mfd, struct.pack("llHHi", sec, usec, EV_SYN, 0, 0))
+            dx -= sx
+            dy -= sy
+            time.sleep(0.02)
 
     def tap(code, shift=False):
         if shift:
@@ -77,7 +115,18 @@ def main():
         if ch == "{":
             j = text.index("}", i)
             name = text[i + 1:j]
-            if name.startswith("^"):            # {^N}: Control-N
+            if name.startswith("M "):           # {M dx dy}: move the mouse
+                _, dx, dy = name.split()
+                move(int(dx), int(dy))
+            elif name[:1] == "M" and name[1:2] in BTN:     # {ML} {ML+} {ML-}
+                b = BTN[name[1]]
+                if name[2:] in ("", "+"):
+                    emit(b, 1, mfd)
+                if name[2:] in ("", "-"):
+                    emit(b, 0, mfd)
+            elif name.upper() == "PIPE":        # | is Return here, so it has a name
+                tap(43, shift=True)
+            elif name.startswith("^"):          # {^N}: Control-N
                 emit(LCTRL, 1)
                 tap(KEY[name[1:].lower()])
                 emit(LCTRL, 0)
@@ -107,8 +156,10 @@ def main():
         i += 1
 
     time.sleep(0.3)
-    fcntl.ioctl(fd, UI_DEV_DESTROY)
-    os.close(fd)
+    for f in (fd, mfd):
+        if f is not None:
+            fcntl.ioctl(f, UI_DEV_DESTROY)
+            os.close(f)
 
 
 if __name__ == "__main__":
