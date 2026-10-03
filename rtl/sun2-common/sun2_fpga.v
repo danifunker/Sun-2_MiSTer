@@ -1628,7 +1628,9 @@ module sun2_fpga(input         cpu_clk,
 		.CS_n(1'b0),
 		.RD_n(~(MATCH_TOD & RD)),
 		.WR_n(~(MATCH_TOD & WR & ~P_UDS_n)),
-		.X2(clk4m9152)
+		.X2(clk4m9152),
+		.LD(1'b0),
+		.LD_TIME(48'd0)
 		);
 `endif
 

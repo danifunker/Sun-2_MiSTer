@@ -32,6 +32,12 @@ module hps_io #(
 
     output reg  [10:0] ps2_key   = 11'd0,
     output reg  [24:0] ps2_mouse = 25'd0,
+    // Main sends this when it loads the core and every minute after: local
+    // time as BCD {0x40, weekday, year % 100, month, day, hour, minute,
+    // second}, [64] toggling.  +rtc=<seconds since 1970> sends that time once;
+    // without it nothing arrives and the machine's clock starts from its
+    // constants, as before.
+    output reg  [64:0] RTC = 65'd0,
 
     input  wire [31:0] sd_lba[VDNUM],
     input  wire [VDNUM-1:0] sd_rd,
@@ -198,6 +204,27 @@ module hps_io #(
             repeat (100_000 * 15) @(posedge clk_sys);   // 15 ms at 100 MHz
         end
     endtask
+
+    function automatic [7:0] bcd8(int v); return {4'(v / 10), 4'(v % 10)}; endfunction
+
+    initial begin : send_rtc
+        longint t, z, era, doe, yoe, doy, mp;
+        int y, m, d, s;
+        if ($value$plusargs("rtc=%d", t)) begin
+            // civil from days, H. Hinnant
+            z   = t / 86400 + 719468;  s = int'(t % 86400);
+            era = z / 146097;          doe = z - era * 146097;
+            yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+            doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            mp  = (5 * doy + 2) / 153;
+            d   = int'(doy - (153 * mp + 2) / 5 + 1);
+            m   = int'(mp < 10 ? mp + 3 : mp - 9);
+            y   = int'(yoe + era * 400 + (m <= 2 ? 1 : 0));
+            repeat (10) @(posedge clk_sys);
+            RTC = {~RTC[64], 8'h40, 8'(int'((t / 86400 + 4) % 7)), bcd8(y % 100), bcd8(m),
+                   bcd8(d), bcd8(s / 3600), bcd8(s / 60 % 60), bcd8(s % 60)};
+        end
+    end
 
     initial begin : typist
         string  keys;

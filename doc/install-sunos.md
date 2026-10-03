@@ -403,8 +403,11 @@ one. `/var` and `/tmp` live in it too, which is what the rest is for.
 
 **`SUMMARY INFORMATION BAD (SALVAGED)` and `Reboot failed...help!`** on `/usr`
 mean a boot stopped in single user after `fsck` repaired it. It follows a stop
-without `/etc/halt` -- leaving the core, or a reset, while SunOS runs -- and
-was seen once after a clean halt on 4.0. `rc.boot` mounts `/usr` read-only
+without `/etc/halt` -- leaving the core, or a reset, while SunOS runs -- or a
+clock that has gone backwards: `fsck` rewrites any cylinder group stamped later
+than "now" and reports it this way.  Cores before 2026-10-03 restarted the
+clock in December 1988 at every load, so it followed every load once a session
+had run past that; the README's "The clock" has the rest. `rc.boot` mounts `/usr` read-only
 before checking it, so the repair is made under a mounted file system, and
 `fsck` then exits 8, which `rc.boot` reads as failure. **Do not `sync` or
 `/etc/halt` from there**: that writes the kernel's old copy of the summary back

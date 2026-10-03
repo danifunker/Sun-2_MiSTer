@@ -115,7 +115,11 @@ module sun2_vme_scsi #(
     input  wire [8:0]  tblk_buf_addr,
     input  wire [7:0]  tblk_buf_wdata,
     input  wire        tape_changed,
-    input  wire [1:0]  tape_volume
+    input  wire [1:0]  tape_volume,
+
+    // ---- setting the clock (mm58167.v's LD / LD_TIME)
+    input  wire        tod_ld,
+    input  wire [47:0] tod_time
 );
 
    // ------------------------------------------------------------------
@@ -232,7 +236,9 @@ module sun2_vme_scsi #(
         .CS_n(1'b0),
         .RD_n(~(sel_rtc & ~mb_we)),
         .WR_n(~(sel_rtc & wr_hi)),
-        .X2(clk4m9152));
+        .X2(clk4m9152),
+        .LD(tod_ld),
+        .LD_TIME(tod_time));
 
    assign mb_dout = sel_rtc ? {rtc_out, 8'h00} : scsi_rd;
 

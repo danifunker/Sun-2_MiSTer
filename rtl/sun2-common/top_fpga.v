@@ -93,6 +93,13 @@ module top(input         cpu_clk,
 	   input 	 tape_changed,
 	   input [1:0] 	 tape_volume,
 
+	   /* The time-of-day clock, set from outside: one clock of tod_ld loads
+	      tod_time, BCD {month, day, weekday, hour, minute, second} -- see
+	      mm58167.v.  Only the VME SCSI board's clock takes it; tie low
+	      where nothing sets the clock. */
+	   input 	 tod_ld,
+	   input [47:0]  tod_time,
+
 	   /* wishbone */
 	   output 	 wb_cyc_o,
 	   output 	 wb_stb_o,
@@ -751,7 +758,8 @@ module top(input         cpu_clk,
       .tblk_done(tblk_done), .tblk_err(tblk_err), .tblk_ready(tblk_ready),
       .tblk_count(tblk_count), .tblk_buf_we(tblk_buf_we),
       .tblk_buf_addr(tblk_buf_addr), .tblk_buf_wdata(tblk_buf_wdata),
-      .tape_changed(tape_changed), .tape_volume(tape_volume));
+      .tape_changed(tape_changed), .tape_volume(tape_volume),
+      .tod_ld(tod_ld), .tod_time(tod_time));
 
    assign mb_ether_int  = 1'b0;
    assign vec_level     = 3'd2;   // conf.sun2/GENERIC: `sc0 ... priority 2'

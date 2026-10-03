@@ -11,7 +11,7 @@ VFLAGS := --binary --timing -Wno-fatal -Wno-WIDTH -Wno-WIDTHEXPAND -Wno-WIDTHTRU
           -Wno-UNSIGNED -Wno-CMPCONST -Wno-DECLFILENAME -Wno-UNUSED -Wno-PINCONNECTEMPTY \
           +define+SIMULATION=1
 
-TESTS := tb_mister_sdram tb_mister_block tb_mister_kbd_mouse tb_kbm_scc tb_mt02 tb_scsi_odd tb_shifter_equiv
+TESTS := tb_mister_sdram tb_mister_block tb_mister_kbd_mouse tb_kbm_scc tb_mister_tod tb_mt02 tb_scsi_odd tb_shifter_equiv
 
 # The whole core is its own makefile; it is a run, not a quick test, so it is
 # not part of `all'.
@@ -40,6 +40,12 @@ tb_mister_kbd_mouse:
 tb_kbm_scc:
 	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ \
 	    $@.sv $(RTL)/sun2_mister_kbd_mouse.sv $(RTL)/vendor/z8530_scc/z8530_scc.sv
+	./obj_$@/$@
+
+# MiSTer's timestamp into the time-of-day clock, read back as SunOS 4 reads it.
+tb_mister_tod:
+	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ -I$(RTL)/sun2-common \
+	    $@.sv $(RTL)/sun2_mister_tod.sv $(RTL)/sun2-common/mm58167.v
 	./obj_$@/$@
 
 # The tapes it reads are built by tools/mktape itself, so the image format is

@@ -99,7 +99,16 @@ module mm58167
     input 	     CS_n,
     input 	     RD_n,
     input 	     WR_n,
-    input 	     X2         // the 4.9152 MHz crystal, shared with the SCCs
+    input 	     X2,        // the 4.9152 MHz crystal, shared with the SCCs
+
+    // Setting the clock from outside, as a battery would have kept it: one
+    // CLK of LD loads the counters from LD_TIME, BCD {month, day, weekday,
+    // hour, minute, second}, with the fractions of a second zeroed.  A load
+    // that arrives during reset_n is remembered and applied after it, so it
+    // can come at any time after configuration.  Tie LD low for a chip that
+    // only ever starts from INIT_*.
+    input 	     LD,
+    input [47:0]     LD_TIME
     );
 
    // ------------------------------------------------------------------
@@ -268,6 +277,9 @@ module mm58167
 
    integer i;
 
+   // A load waits here until the chip is out of reset; nothing resets it.
+   reg 	     ld_pend = 1'b0;
+
    always @(posedge CLK)
      begin
 	// Before the reset arm, so reset still wins.
@@ -276,6 +288,7 @@ module mm58167
 	x2_d    <= x2_s2;
 	read_d  <= read;
 	write_d <= write;
+	if (LD) ld_pend <= 1'b1;
 
 	if (~reset_n) begin
 	   x2_s1    <= 1'b0;
@@ -443,6 +456,20 @@ module mm58167
 		5'h16: r_standby <= DIN[0];
 		default: ; // 10 and 14 are read-only, 17..1F unused
 	      endcase
+	   end
+
+	   // ---- a load from outside, last so it wins over a tick or a write ----
+	   if (ld_pend) begin
+	      ld_pend  <= 1'b0;
+	      r_ms     <= 4'd0;
+	      r_hun    <= 4'd0;
+	      r_ten    <= 4'd0;
+	      r_mon_t  <= LD_TIME[44];    r_mon_u  <= LD_TIME[43:40];
+	      r_day_t  <= LD_TIME[37:36]; r_day_u  <= LD_TIME[35:32];
+	      r_wday   <= LD_TIME[26:24];
+	      r_hour_t <= LD_TIME[21:20]; r_hour_u <= LD_TIME[19:16];
+	      r_min_t  <= LD_TIME[14:12]; r_min_u  <= LD_TIME[11:8];
+	      r_sec_t  <= LD_TIME[6:4];   r_sec_u  <= LD_TIME[3:0];
 	   end
 	end
      end

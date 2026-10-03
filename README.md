@@ -19,9 +19,9 @@ still describes the machine.
 upgrades it.** On a MiSTer the core boots the PROM, installs SunOS 4.0 from the
 release tapes onto a disk image (both volumes, every package), boots that disk
 multi-user to a login and `suntools`, and takes the 4.0.3 upgrade tapes over it
-to a 4.0.3 login -- on disks up to the Sun-2's 1 GiB limit. Not there yet:
-networking, sound (the keyboard bell), colour (the cgtwo), and the date (the
-clock starts in December 1987).
+to a 4.0.3 login -- on disks up to the Sun-2's 1 GiB limit, with the mouse
+and the clock taken from the MiSTer. Not there yet: networking, sound (the
+keyboard bell) and colour (the cgtwo).
 
 What a user needs:
 
@@ -160,13 +160,40 @@ next boot may find `/usr` damaged and stop in single user with `Reboot
 failed...help!`; [doc/install-sunos.md](doc/install-sunos.md) has the three
 commands that put it right -- and not `/etc/halt`, which undoes the repair.
 
-**`SUMMARY INFORMATION BAD (SALVAGED)` and `Mounted FS fixed - rebooting`
-after loading the core are the clock, not the disk.** The Sun's clock does not
-yet come from the MiSTer: every time the core is loaded it starts again at the
-same moment in December 1988, earlier than the times the last session wrote
-into the filesystems, and SunOS's `fsck` corrects any "future" timestamp and
-reports it this way. Nothing is lost, and the machine reboots once by itself.
-A reset or `b` at the monitor keeps the clock running and does not do it.
+### The clock
+
+The Sun's clock is set from MiSTer's local time when the core loads, and then
+runs on its own, as a battery-backed one would. SunOS keeps no year in that
+chip: it takes the year nearest the last time the root file system was
+written. So a disk stays in the year it was installed in and moves on with
+real time, while the month, day and time come from MiSTer.
+
+They match MiSTer's exactly when the Sun's year is **1990**, which is what the
+core is built around: 36 years behind MiSTer, after every file on the 4.0 and
+4.0.3 tapes, and ten years short of 2000, which SunOS 4.0.3 was never tested
+against. Two things to do once on a disk, as root:
+
+    rm /usr/share/lib/zoneinfo/localtime
+    ln /usr/share/lib/zoneinfo/GMT /usr/share/lib/zoneinfo/localtime
+    date 9010031400.00      # yymmddhhmm.ss: today's month, day and time, in 1990
+    touch /.y; rm /.y; sync
+
+The first two make SunOS show the time as it is given, MiSTer's local time --
+SunOS keeps UTC and adds its own time zone, and Main_MiSTer gives this core
+local time. `date` puts the disk in 1990, and the last line makes sure the
+root file system is written in 1990, since that write is where the next boot
+takes its year from. After that every start, warm or cold, comes up with the
+right date and time -- on the board, a cold start read `Wed Oct 3 13:39:03 GMT
+1990` with MiSTer's clock at 13:39:03. A disk not started for more than six
+months comes back a year out, and the same `date` puts it right.
+
+**`SUMMARY INFORMATION BAD (SALVAGED)` means the clock went backwards**, not
+that the disk is damaged: SunOS's `fsck` corrects any timestamp later than
+"now" and reports it so -- with `Mounted FS fixed - rebooting` on `/`, and on
+`/usr` with `Reboot failed...help!`, which wants the three commands in
+[doc/install-sunos.md](doc/install-sunos.md). It happens
+once on a disk the first time this core starts it, if the disk was last used
+with an older core (whose clock always started in December 1988).
 
 ### The keyboard
 

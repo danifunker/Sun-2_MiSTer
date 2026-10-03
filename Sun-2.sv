@@ -111,6 +111,7 @@ module emu
     // ---- hps_io --------------------------------------------------------------------
     wire [10:0] ps2_key;
     wire [24:0] ps2_mouse;
+    wire [64:0] rtc;
 
     // Two virtual drives: VD 0 the disk, VD 1 the tape.
     wire [31:0] sd_lba[2];
@@ -139,6 +140,7 @@ module emu
 
         .ps2_key        (ps2_key),
         .ps2_mouse      (ps2_mouse),
+        .RTC            (rtc),
 
         .sd_lba         (sd_lba),
         .sd_rd          (sd_rd),
@@ -215,6 +217,20 @@ module emu
         .kbd_ser_rx   (kbm_txda),
         .mouse_ser_tx (kbm_rxdb),
         .bell         ()
+    );
+
+    // ---- the time of day -------------------------------------------------------------
+    // MiSTer's local time as it is when the core loads, less 36 years and in
+    // SunOS's own encoding, into the MM58167 on the SCSI board
+    // (rtl/sun2_mister_tod.sv).
+    wire        tod_ld;
+    wire [47:0] tod_time;
+
+    sun2_mister_tod tod (
+        .clk       (cpu_clk),
+        .rtc       (rtc),
+        .ld        (tod_ld),
+        .tod       (tod_time)
     );
 
     // ---- the disk ----------------------------------------------------------------------
@@ -415,6 +431,9 @@ module emu
         .tblk_buf_wdata (tblk_buf_wdata),
         .tape_changed   (tape_changed),
         .tape_volume    (tape_volume),
+
+        .tod_ld         (tod_ld),
+        .tod_time       (tod_time),
 
         .wb_cyc_o       (wb_cyc),
         .wb_stb_o       (wb_stb),
