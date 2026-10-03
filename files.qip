@@ -27,7 +27,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/vendor/rd68011/gen/rd68011_ur
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/vendor/rd68011/rd68011_dedge_ff.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/vendor/rd68011/rd68011_sync.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/vendor/rd68011/rd68011_alu.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/vendor/rd68011/rd68011_shifter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/patched/rd68011/rd68011_shifter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/vendor/rd68011/rd68011_mul.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/vendor/rd68011/rd68011_divider.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/vendor/rd68011/rd68011_biu.sv

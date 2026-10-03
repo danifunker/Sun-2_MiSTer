@@ -94,12 +94,79 @@ The serial console is the MiSTer UART at 9600 baud. With the frame buffer
 fitted the PROM puts its console on the screen and keyboard, as a real Sun
 does.
 
+### Logging in, and SunView
+
+An installed disk boots by itself. The OSD remembers the image you last chose
+for *SCSI disk (sd0)* and mounts it again whenever the core starts, and the
+PROM auto-boots `sd(0,0,0)vmunix` from whatever disk it finds there -- so once
+SunOS is installed, loading the core is all it takes. A reset does the same,
+and so does `b sd()` at the monitor's `>` prompt. It ends at
+
+    sun2 login:
+
+**Log in as `root`. There is no password**: SunOS 4.0 installs that way, and
+`suninstall` creates no other accounts. Set one with `passwd`. The other names in
+`/etc/passwd` are Sun's system accounts, locked with a `*`, except `sync`, which
+has no password either and does nothing but run `/bin/sync` and log out -- the
+way to flush the disks from the login prompt. To add a user of your own, add a
+line with `vipw`, make the home directory and `chown` it to them, and give them
+a password with `passwd name`; 4.0 has no `adduser`.
+
+**SunView, the GUI, is `suntools`**, typed at the shell prompt on the screen
+(not on the serial port -- it needs the frame buffer):
+
+    sun2# suntools
+
+It takes over the screen and opens its default windows: a console window, a
+shell, a clock and the mail icon.
+
+**The mouse does not work yet.** A USB mouse on the MiSTer is meant to be the
+Sun's mouse, and the core sends its movements to the Sun as a Sun mouse would,
+but the pointer does not move -- this is the next thing being fixed. Until it
+is, SunView starts and shows its windows and nothing more: the pointer stays
+where it starts, over the background, so typing reaches no window, and
+nothing can be clicked or chosen from a menu. L1-A still gets you out.
+
+With a working mouse: typing goes to the window under the pointer, and holding
+the **right** button over the grey background brings up the root menu -- more
+shells and tools, and **Exit Suntools**, which asks for a click to confirm and
+returns you to the plain console. To start SunView at every login on the
+screen, but not on the serial port, add this to root's `/.login`:
+
+    if ( "`tty`" == "/dev/console" ) suntools
+
+**Shut down before you reset, leave the core or switch off** -- `/etc/halt`
+syncs the disks and stops at the monitor's `>`. Right Alt + F1 then A (the
+Sun's L1-A, below) also stops the machine at the monitor, but without syncing
+anything; `c` there carries on where it left off. Stop it any other way and the
+next boot may find `/usr` damaged and stop in single user with `Reboot
+failed...help!`; [doc/install-sunos.md](doc/install-sunos.md) has the three
+commands that put it right -- and not `/etc/halt`, which undoes the repair.
+
 ### The keyboard
 
 A PC keyboard stands in for the Sun's (`rtl/sun2_mister_kbd_mouse.sv`). The
 main block is where you would expect it; the Sun's extra keys are here. The
 left block's names are the legends Sun printed on its later keyboards; a Sun-2
 keyboard calls them L1..L10.
+
+**L1 is on the Right Alt key.** A Sun keyboard has a block of ten function
+keys down its left-hand side, L1 to L10, that a PC keyboard has no room for --
+and L1, *Stop*, is the one that matters most, because L1-A is how you stop
+the machine and get to the monitor. The core puts that whole block under
+**Right Alt**: hold Right Alt and the F-keys stop being the Sun's top row and
+become the left block instead, so Right Alt + F1 is L1, Right Alt + F2 is L2,
+and so on to F10. Right Alt on its own sends nothing to the Sun -- it is only
+the switch. So the Sun's **L1-A** is:
+
+1. hold **Right Alt**,
+2. hold **F1** as well (that is L1 going down),
+3. press **A**.
+
+F1 has to still be held when A goes down. It stays L1 until it is released,
+even if Right Alt is let go first, so only letting go of F1 early turns the
+chord into a plain `a`. L1-A drops to the monitor's `>` prompt without syncing
+the disks, and `c` there resumes where the machine left off.
 
 | PC | Sun |
 |---|---|

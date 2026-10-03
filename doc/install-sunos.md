@@ -401,12 +401,22 @@ one. `/var` and `/tmp` live in it too, which is what the rest is for.
    /dev/sd0g             950382   58849  796494     7%    /usr
    ```
 
-**Once, on 4.0's second boot**, `/usr` came up `SUMMARY INFORMATION BAD
-(SALVAGED)` and `rc` stopped in single user with `Reboot failed...help!`, after
-a clean `/etc/halt`. `fsck -n /dev/rsd0g` then found nothing wrong -- the
-preen pass had already fixed it -- and `/etc/halt` and a fresh boot carried on.
-It has not recurred on 4.0.3, through a reboot and the upgrade's own checks.
-If you meet it, `fsck /dev/rsd0g` and reboot.
+**`SUMMARY INFORMATION BAD (SALVAGED)` and `Reboot failed...help!`** on `/usr`
+mean a boot stopped in single user after `fsck` repaired it. It follows a stop
+without `/etc/halt` -- leaving the core, or a reset, while SunOS runs -- and
+was seen once after a clean halt on 4.0. `rc.boot` mounts `/usr` read-only
+before checking it, so the repair is made under a mounted file system, and
+`fsck` then exits 8, which `rc.boot` reads as failure. **Do not `sync` or
+`/etc/halt` from there**: that writes the kernel's old copy of the summary back
+over the repair, and the next boot finds the same fault. What works:
+
+```
+# umount /usr                 (complains about /etc/mtab; the unmount happens)
+# fsck -y /dev/rsd0g
+# reboot
+```
+
+and it comes up multi-user with `/usr` clean.
 
 ### Getting the most out of /usr
 

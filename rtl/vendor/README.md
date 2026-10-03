@@ -14,6 +14,9 @@ upstream and re-copy; do not edit them in place.
 
 Notes:
 
+* **One file is built from a patched copy instead**: `rd68011_shifter.sv`,
+  from `rtl/patched/rd68011/` -- the copy here is left as upstream has it.
+  `rtl/patched/README.md` says what changed and why.
 * **RD68011** was pinned at `04cd25b` as a submodule. `f768c7f` is three
   commits later and differs from it in `rtl/` only by the licence and SPDX
   comment headers it added. The logic is identical, and the earlier commit

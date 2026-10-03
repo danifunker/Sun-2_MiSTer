@@ -11,7 +11,7 @@ VFLAGS := --binary --timing -Wno-fatal -Wno-WIDTH -Wno-WIDTHEXPAND -Wno-WIDTHTRU
           -Wno-UNSIGNED -Wno-CMPCONST -Wno-DECLFILENAME -Wno-UNUSED -Wno-PINCONNECTEMPTY \
           +define+SIMULATION=1
 
-TESTS := tb_mister_sdram tb_mister_block tb_mister_kbd_mouse tb_mt02 tb_scsi_odd
+TESTS := tb_mister_sdram tb_mister_block tb_mister_kbd_mouse tb_mt02 tb_scsi_odd tb_shifter_equiv
 
 # The whole core is its own makefile; it is a run, not a quick test, so it is
 # not part of `all'.
@@ -50,6 +50,15 @@ tb_scsi_odd:
 	    $(RTL)/vendor/wish5380/wish5380_pkg.sv $(RTL)/vendor/wish5380/scsi_fabric.sv \
 	    $(RTL)/vendor/wish5380/scsi_targ.sv $(RTL)/sun2-common/sun2_mt02.sv \
 	    -I$(RTL)/sun2-common $(RTL)/sun2-common/sun2_scsi_core.sv $@.sv
+	./obj_$@/$@
+
+# The patched shifter against upstream's, renamed so both can be in one model.
+tb_shifter_equiv:
+	mkdir -p obj_$@
+	sed 's/^module rd68011_shifter /module rd68011_shifter_ref /' \
+	    $(RTL)/vendor/rd68011/rd68011_shifter.sv > obj_$@/rd68011_shifter_ref.sv
+	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ \
+	    $(RTL)/patched/rd68011/rd68011_shifter.sv obj_$@/rd68011_shifter_ref.sv $@.sv
 	./obj_$@/$@
 
 clean:

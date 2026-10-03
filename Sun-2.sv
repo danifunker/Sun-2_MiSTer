@@ -52,10 +52,16 @@ module emu
 
     // ---- the OSD ---------------------------------------------------------------
     // status[0] is the reset item and nothing else; the options start at 1.
+    // The disk is SC: Main_MiSTer remembers the image last chosen for it (in
+    // config/Sun-2.s0) and mounts it again whenever the core starts, so the
+    // PROM finds it and auto-boots SunOS with nothing selected by hand.  The
+    // core holds reset until boot0.rom arrives, and Main mounts the disk right
+    // after loading it.  The tape stays plain S: a cartridge is chosen for an
+    // install, not kept in the drive.
     `include "build_id.v"
     localparam CONF_STR = {
         "Sun-2;UART9600;",
-        "S0,IMGVHD,SCSI disk (sd0);",
+        "SC0,IMGVHD,SCSI disk (sd0);",
         "S1,QIC,Tape (st0);",
         "O[4:3],Tape volume,1,2,3;",
         "-;",
