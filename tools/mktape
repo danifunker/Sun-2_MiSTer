@@ -44,14 +44,31 @@
 #
 # --size MB makes a disk of that size instead, up to 1024: a disk with just
 # a root and a swap partition, swap (--swap MB, 32 by default) at the end.
-# Its cylinders are 16 heads of 64 sectors, half a megabyte, and two of them
-# are alternates.  1024 is the most a Sun-2 can address at all: every Sun-2
-# SCSI driver -- the PROM's, the standalone one, the kernel's -- sends the
-# six-byte READ and WRITE, whose block address is 21 bits.
+# --root MB adds a /usr: root that size on a, swap on b, /usr on g taking the
+# rest, which is the layout 4.0.3's sunupgrade needs.  The cylinders are 16
+# heads of 64 sectors, half a megabyte, and two of them are alternates.  1024
+# is the most a Sun-2 can address at all: every Sun-2 SCSI driver -- the
+# PROM's, the standalone one, the kernel's -- sends the six-byte READ and
+# WRITE, whose block address is 21 bits.  a and b are kept a cylinder off any
+# multiple of 32 MB, so 32 comes out as 31.5 (see STANDALONE_CLIP).
+#
+#     tools/mktape --disk sd0-1g.img --size 1024 --root 32
 #
 # A disk of this shape is not in SunOS 4.0's /etc/format.dat, and suninstall
-# labels the disk with format, so its two format.dat lines are printed for
-# adding to the miniroot's copy before running suninstall.
+# labels the disk with format, which will not label a disk of a type it does
+# not know.  So the tape is patched as it is built: every /etc/format.dat on it
+# -- in a file system image (the miniroot, MUNIX's) or a tar archive (root, and
+# Install's proto) -- gains the 128, 256, 512 and 1024 MB disks, each with a
+# partition table for the default 32 MB swap.  Nothing else on the tape
+# changes, and no tape file changes size: a file system's copy keeps the
+# fragments it has, giving up comment lines from the end if the entries need
+# the room (Sun's own commented-out entries first), and a tar archive moves its
+# later members into the zeroes after its end.  --patch does the same to a
+# .qic built earlier, in place, and --no-patch builds the tape as it came.  For
+# any other --size the two format.dat lines are printed, to be added to the
+# miniroot's copy by hand before running suninstall.
+#
+#     tools/mktape --patch sunos-4.0-sun2.qic
 #
 # Blocks 1-15, where installboot will put the real boot program, hold a stub
 # until then.  The PROM auto-boots a labelled disk without looking at what it
@@ -85,31 +102,74 @@ def micropolis_1558():
                 parts={"a": (0, 61), "b": (61, 122), "c": (0, 1218), "g": (183, 1218 - 183)})
 
 
-def sized_disk(size_mb, swap_mb):
-    """Root and swap only, on half-megabyte cylinders."""
+# The standalone sd driver -- the copy program, tpboot and the installed boot
+# program all use it -- keeps a partition's size in an unsigned short
+# (sunstand/sd.c: sd_nblk = (unsigned short)dkl_nblk) and clips every transfer
+# to it.  Where it starts is not checked, so a partition of 65536 blocks or a
+# multiple, 32 MB on these cylinders, is one it moves nothing to or from at
+# all: the copy says "Write error" and copies 0 bytes.  The two partitions
+# standalone code touches, a (boot) and b (the miniroot), are kept a cylinder
+# clear of that; the kernel's own driver has no such limit.
+STANDALONE_CLIP = 65536
+
+
+def standalone_ok(cyls, cyl_blocks):
+    return cyls * cyl_blocks % STANDALONE_CLIP >= cyl_blocks
+
+
+def sized_disk(size_mb, swap_mb, root_mb=None):
+    """Root and swap, on half-megabyte cylinders -- or, given root_mb, root,
+    swap and /usr in Sun's order, a then b then g taking the rest."""
     pcyl = size_mb * 2
     ncyl = pcyl - 2
+    cyl = 16 * 64
     swap = swap_mb * 2
     if not 16 <= size_mb <= 1024:
         sys.exit("mktape: --size is 16 to 1024 MB")
     if not 4 <= swap_mb or swap + 16 > ncyl:
         sys.exit("mktape: --swap does not leave room for a root")
-    return dict(name=f"MiSTer {size_mb}MB", ncyl=ncyl, acyl=2, pcyl=pcyl, nhead=16, nsect=64,
-                parts={"a": (0, ncyl - swap), "b": (ncyl - swap, swap), "c": (0, ncyl)})
+    g = dict(name=f"MiSTer {size_mb}MB", ncyl=ncyl, acyl=2, pcyl=pcyl, nhead=16, nsect=64)
+    if root_mb is None:
+        # Swap is the one that moves, the nearest size that suits both.
+        swap = next(s for s in (swap, swap - 1, swap + 1, swap - 2, swap + 2)
+                    if standalone_ok(s, cyl) and standalone_ok(ncyl - s, cyl))
+        g["parts"] = {"a": (0, ncyl - swap), "b": (ncyl - swap, swap), "c": (0, ncyl)}
+    else:
+        root = root_mb * 2
+        if not 8 <= root_mb or root + swap + 16 > ncyl:
+            sys.exit("mktape: --root is at least 8 MB and must leave 8 MB for /usr")
+        root -= not standalone_ok(root, cyl)
+        swap -= not standalone_ok(swap, cyl)
+        g["parts"] = {"a": (0, root), "b": (root, swap), "c": (0, ncyl),
+                      "g": (root + swap, ncyl - root - swap)}
+    return g
 
 
 def disk_bytes(g):
     return g["pcyl"] * g["nhead"] * g["nsect"] * BLOCK
 
 
-def format_dat(g):
-    """The two /etc/format.dat lines that make format know the disk."""
+# SunOS reports this machine's SCSI disk as an Adaptec ACB4000 -- format offers
+# the ACB4000 types for it -- so that is the controller the entries are for.
+# An MD21 entry, as a Micropolis 1558 would have on a real 2/160, is never
+# consulted.  An ACB4000 type carries a buffer skew and a write precompensation
+# cylinder, which format otherwise stops to ask for; precomp at pcyl means none,
+# as in Sun's own entries.
+FORMAT_CTLR = "ACB4000"
+
+
+def format_dat(g, folded=False):
+    """The two /etc/format.dat entries that make format know the disk: one line
+    each for typing at a shell, or folded the way Sun's own file has them."""
     cyl = g["nhead"] * g["nsect"]
     parts = " : ".join(f"{p} = {c}, {n * cyl}" for p, (c, n) in sorted(g["parts"].items()))
-    return (f'disk_type = "{g["name"]}" : ctlr = MD21 : ncyl = {g["ncyl"]} : acyl = {g["acyl"]}'
-            f' : pcyl = {g["pcyl"]} : nhead = {g["nhead"]} : nsect = {g["nsect"]}'
-            f' : rpm = 3600 : bpt = {g["nsect"] * BLOCK}\n'
-            f'partition = "{g["name"]}" : disk = "{g["name"]}" : ctlr = MD21 : {parts}\n')
+    fields = [f'disk_type = "{g["name"]}"', f"ctlr = {FORMAT_CTLR}",
+              f'ncyl = {g["ncyl"]} : acyl = {g["acyl"]} : pcyl = {g["pcyl"]}'
+              f' : nhead = {g["nhead"]} : nsect = {g["nsect"]}',
+              f'rpm = 3600 : bpt = {g["nsect"] * BLOCK} : skew = 2 : precomp = {g["pcyl"]}']
+    table = [f'partition = "{g["name"]}"', f'disk = "{g["name"]}" : ctlr = {FORMAT_CTLR}', parts]
+    sep = " \\\n\t: " if folded else " : "
+    return sep.join(fields) + "\n" + ("\n" if folded else "") + sep.join(table) + "\n"
 
 
 def disk_label(g):
@@ -161,6 +221,328 @@ def boot_stub():
     assert len(code) == 34
     code += STUB_MESSAGE.encode() + b"\0"               # 34 msg
     return bytes(code) + bytes(15 * BLOCK - len(code))
+
+
+# ---------------------------------------------------------------------------
+# Teaching the tape's format.dat the disks --size makes
+# ---------------------------------------------------------------------------
+
+TAPE_DISK_SIZES = (128, 256, 512, 1024)  # 128 is the smallest a full install fits
+DEFAULT_SWAP = 32
+
+SECTION_MARK = "\n#\n# Added by tools/mktape"
+FORMAT_DAT_SECTION = (SECTION_MARK + ": the disks its --size makes for the MiSTer\n"
+                      "# Sun-2, the partition tables with the default 32 MB of swap.\n"
+                      "#\n")
+
+
+def mister_format_dat():
+    return FORMAT_DAT_SECTION + "\n".join(format_dat(sized_disk(s, DEFAULT_SWAP), folded=True)
+                                          for s in TAPE_DISK_SIZES)
+
+
+# Sun's commented-out entries: "#disk_type = ..." or "#partition = ...", then
+# continuation lines, "#\t: ...".
+DEAD_START = re.compile(r"#(disk_type|partition)\b")
+DEAD_MORE = re.compile(r"#\s+:")
+
+
+def fit_format_dat(old, cap):
+    """old with the MiSTer disks appended, in at most cap bytes: comments are
+    given up from the end until it fits -- Sun's commented-out entries one by
+    one first, then other runs of comment lines, never the header and never an
+    entry.  None if even that is too big.  Each piece is a few hundred bytes at
+    most, so what fits also comes within a fragment of cap.  A section an
+    earlier mktape added, always last, is replaced."""
+    mark = old.find(SECTION_MARK)
+    if mark >= 0:
+        old = old[:mark]
+    lines = old.rstrip("\n").split("\n")
+    header = 0
+    while header < len(lines) and lines[header].startswith("#"):
+        header += 1
+
+    def comment(i):                             # and not inside a continued entry
+        return (i >= header and lines[i].startswith("#")
+                and (lines[i - 1].startswith("#") or not lines[i - 1].endswith("\\")))
+
+    dead, taken = [], set()
+    for i in range(header, len(lines)):
+        if comment(i) and DEAD_START.match(lines[i]):
+            j = i + 1
+            while j < len(lines) and comment(j) and DEAD_MORE.match(lines[j]):
+                j += 1
+            unit = list(range(i, j))
+            if lines[i - 1] == "#" and comment(i - 1) and DEAD_MORE.match(lines[i - 2]):
+                unit.insert(0, i - 1)           # the "#" separating it from the one before
+            dead.append(unit)
+            taken.update(unit)
+    runs, run = [], []
+    for i in range(header, len(lines) + 1):
+        if i < len(lines) and comment(i) and i not in taken:
+            run.append(i)
+        elif run:
+            runs.append(run)
+            run = []
+    keep = [True] * len(lines)
+    section = mister_format_dat()
+
+    def text():
+        return "\n".join(l for l, k in zip(lines, keep) if k) + "\n" + section
+
+    t = text()
+    for unit in dead[::-1] + runs[::-1]:
+        if len(t) <= cap:
+            break
+        for i in unit:
+            keep[i] = False
+        t = text()
+    return t if len(t) <= cap else None
+
+
+def same_text(a, b):
+    """Equal but for the newlines a file system's copy may be padded with."""
+    return a.rstrip("\n") == b.rstrip("\n")
+
+
+class Ufs:
+    """Just enough of a 4.2BSD file system (big-endian, as a Sun wrote it) to
+    find a file and rewrite it in the space it already has.  The same layout
+    tools/ufsread reads, and the same two traps: inode numbers index the inode
+    array as they are, and block pointers count fragments."""
+
+    MAGIC, SBOFF, DINODE = 0x011954, 8192, 128
+
+    @classmethod
+    def probe(cls, img):
+        return (len(img) >= cls.SBOFF + 2048
+                and struct.unpack_from(">I", img, cls.SBOFF + 1372)[0] == cls.MAGIC)
+
+    def __init__(self, img):
+        self.img = img
+        g = lambda o: struct.unpack_from(">i", img, self.SBOFF + o)[0]
+        self.iblkno, self.cgoffset, self.cgmask = g(16), g(24), g(28)
+        self.bsize, self.fsize, self.frag = g(48), g(52), g(56)
+        self.nindir, self.inopb = g(116), g(120)
+        self.ipg, self.fpg = g(184), g(188)
+
+    def _at(self, off, n):
+        if off < 0 or off + n > len(self.img):
+            raise ValueError(f"offset {off} is outside the file system")
+        return self.img[off:off + n]
+
+    def inode_off(self, ino):
+        cg = ino // self.ipg
+        fr = (self.fpg * cg + self.cgoffset * (cg & ~self.cgmask) + self.iblkno
+              + (ino % self.ipg) // self.inopb * self.frag)
+        return fr * self.fsize + (ino % self.inopb) * self.DINODE
+
+    def inode(self, ino):
+        d = self._at(self.inode_off(ino), self.DINODE)
+        return dict(mode=struct.unpack_from(">H", d, 0)[0], size=struct.unpack_from(">Q", d, 8)[0],
+                    db=list(struct.unpack_from(">12i", d, 40)), ib=struct.unpack_from(">i", d, 88)[0])
+
+    def read(self, ino):
+        i = self.inode(ino)
+        ptrs = i["db"]
+        if i["size"] > 12 * self.bsize:
+            ptrs = ptrs + list(struct.unpack(f">{self.nindir}i", self._at(i["ib"] * self.fsize, self.bsize)))
+        out = bytearray()
+        for p in ptrs[:-(-i["size"] // self.bsize)]:
+            n = min(self.bsize, i["size"] - len(out))   # the last block may be fragments
+            out += self._at(p * self.fsize, n) if p else bytes(n)
+        return bytes(out)
+
+    def lookup(self, path):
+        ino = 2                                  # the root
+        for name in path.strip("/").split("/"):
+            d, off, found = self.read(ino), 0, None
+            while off + 8 <= len(d):
+                n, reclen, namlen = struct.unpack_from(">IHH", d, off)
+                if reclen < 8:
+                    break
+                if n and d[off + 8:off + 8 + namlen] == name.encode():
+                    found = n
+                    break
+                off += reclen
+            if not found:
+                return None
+            ino = found
+        return ino
+
+    def rewrite(self, ino, data):
+        """data in place of the file's contents, if it fits the fragments the
+        file already has -- no more, which would need the free map, and no
+        fewer, which fsck would find allocated but unused."""
+        i = self.inode(ino)
+        nblk = -(-i["size"] // self.bsize)
+        if nblk > 12 or -(-len(data) // self.bsize) != nblk:
+            return False
+        tail = lambda size: -(-(size - (nblk - 1) * self.bsize) // self.fsize)
+        if tail(len(data)) != tail(i["size"]):
+            return False
+        for b in range(nblk):
+            n = self.bsize if b < nblk - 1 else tail(len(data)) * self.fsize
+            chunk = data[b * self.bsize:b * self.bsize + n]
+            off = i["db"][b] * self.fsize
+            self._at(off, n)
+            self.img[off:off + n] = chunk + bytes(n - len(chunk))
+        struct.pack_into(">Q", self.img, self.inode_off(ino) + 8, len(data))
+        return True
+
+    def capacity(self, ino):
+        """The largest file, and the smallest, that rewrite() will take."""
+        size = self.inode(ino)["size"]
+        whole = (size - 1) // self.bsize * self.bsize
+        top = whole + -(-(size - whole) // self.fsize) * self.fsize
+        return top, top - self.fsize + 1
+
+
+def tar_ok(h):
+    try:
+        return int(h[148:156].replace(b"\0", b" ").strip() or b"x", 8) == sum(h) - sum(h[148:156]) + 256
+    except ValueError:
+        return False
+
+
+def tar_members(data):
+    """(header offset, name, data size) of each member of a tar archive, and
+    the offset of the zero block that ends it -- or None if data is not one."""
+    members, off = [], 0
+    while off + BLOCK <= len(data):
+        h = data[off:off + BLOCK]
+        if not any(h):
+            return members, off
+        if not tar_ok(h):
+            return None
+        size = int(h[124:136].replace(b"\0", b" ").strip() or b"0", 8)
+        if h[156:157] in (b"1", b"2"):          # a link: the size is its target's, no data follows
+            size = 0
+        members.append((off, h[:100].split(b"\0")[0].decode("latin-1"), size))
+        off += BLOCK + -(-size // BLOCK) * BLOCK
+    return None
+
+
+def tar_end_zeros(data, end):
+    """How many zero blocks end the archive, up to the two tar writes."""
+    zeros = 0
+    while zeros < 2 and end + (zeros + 1) * BLOCK <= len(data) \
+            and not any(data[end + zeros * BLOCK:end + (zeros + 1) * BLOCK]):
+        zeros += 1
+    return zeros
+
+
+def tar_capacity(data, old_size, end):
+    """The most a member of old_size can grow to before the end hits the end of data."""
+    spare = len(data) - end - tar_end_zeros(data, end) * BLOCK
+    return (-(-old_size // BLOCK) + spare // BLOCK) * BLOCK
+
+
+def tar_replace(data, off, old_size, new, end):
+    """data with the member at off holding new, its later members moved up or
+    down to suit, and the archive the same length: growing uses the zeroes and
+    leftover record after the end, and the end keeps its zero blocks."""
+    zeros = tar_end_zeros(data, end)
+    nold, nnew = -(-old_size // BLOCK), -(-len(new) // BLOCK)
+    if end + (nnew - nold + zeros) * BLOCK > len(data):
+        return None
+    h = bytearray(data[off:off + BLOCK])
+    h[124:136] = b"%11o " % len(new)
+    h[148:156] = b" " * 8
+    h[148:156] = b"%6o\0 " % sum(h)
+    out = (data[:off] + bytes(h) + new + bytes(nnew * BLOCK - len(new))
+           + data[off + (1 + nold) * BLOCK:end] + bytes(zeros * BLOCK))
+    out += bytes(max(0, end + zeros * BLOCK - len(out)))
+    return bytearray(out + data[len(out):])
+
+
+FORMAT_DAT_TAR = re.compile(r"(^|/)etc/format\.dat$")
+
+
+def patch_format_dat(data, where):
+    """Every /etc/format.dat in one tape file, given the MiSTer disks.  Returns
+    the new contents, or None if there was nothing to change."""
+    changed = False
+    if Ufs.probe(data):
+        img = bytearray(data)
+        try:
+            fs = Ufs(img)
+            ino = fs.lookup("/etc/format.dat")
+            if ino is None:
+                return None
+            old = fs.read(ino).decode("latin-1")
+            top, bottom = fs.capacity(ino)
+            new = fit_format_dat(old, top)
+            if new is not None and same_text(new, old):
+                print(f"mktape: {where}: /etc/format.dat already has these MiSTer disks")
+                return None
+            if new is not None and len(new) < bottom:
+                new += "\n" * (bottom - len(new))
+            if new is None or not fs.rewrite(ino, new.encode("latin-1")):
+                print(f"mktape: {where}: no room in the file system's /etc/format.dat; not patched",
+                      file=sys.stderr)
+                return None
+        except (ValueError, struct.error, IndexError) as e:
+            print(f"mktape: {where}: a file system, but unreadable ({e}); not patched", file=sys.stderr)
+            return None
+        print(f"mktape: {where}: file system /etc/format.dat, {len(old)} -> {len(new)} bytes")
+        return bytes(img)
+
+    found = tar_members(data)
+    if not found:
+        return None
+    for off, name, size in found[0]:
+        if not FORMAT_DAT_TAR.search(name):
+            continue
+        # Members move when an earlier one changes size, so find them afresh.
+        members, end = tar_members(data)
+        off, name, size = next(m for m in members if m[1] == name)
+        old = data[off + BLOCK:off + BLOCK + size].decode("latin-1")
+        new = fit_format_dat(old, tar_capacity(data, size, end))
+        if new is not None and same_text(new, old):
+            print(f"mktape: {where}: {name} already has these MiSTer disks")
+            continue
+        out = new is not None and tar_replace(data, off, size, new.encode("latin-1"), end)
+        if not out:
+            print(f"mktape: {where}: no room after the end of the archive for {name}; not patched",
+                  file=sys.stderr)
+            continue
+        assert len(out) == len(data)
+        data, changed = bytes(out), True
+        print(f"mktape: {where}: tar {name}, {len(old)} -> {len(new)} bytes")
+    return data if changed else None
+
+
+def patch_volumes(vols):
+    """Patch every file of every volume in place; how many files changed."""
+    n = 0
+    for vi, files in enumerate(vols):
+        for fi, data in enumerate(files):
+            new = patch_format_dat(data, f"volume {vi+1} file {fi+1}")
+            if new is not None:
+                assert len(new) == len(data)
+                files[fi] = new
+                n += 1
+    return n
+
+
+def read_qic(path):
+    """The volumes of a .qic as lists of files, and each file's first block."""
+    with open(path, "rb") as f:
+        img = f.read()
+    magic, tape, version, nvol = struct.unpack_from(">4s4sII", img, 0)
+    if (magic, tape, version) != (b"SUN2", b"TAPE", 1) or not 1 <= nvol <= MAX_VOLUMES:
+        sys.exit(f"mktape: {path}: not a tape image mktape wrote")
+    vols, starts = [], []
+    for vi in range(nvol):
+        base = 16 + 128 * vi
+        nfiles = struct.unpack_from(">I", img, base)[0]
+        if nfiles > MAX_FILES:
+            sys.exit(f"mktape: {path}: volume {vi+1} claims {nfiles} files")
+        blks = struct.unpack_from(f">{nfiles + 1}I", img, base + 4)
+        vols.append([img[s * BLOCK:e * BLOCK] for s, e in zip(blks, blks[1:])])
+        starts.append(list(blks[:-1]))
+    return vols, starts
 
 
 def natural_key(name):
@@ -264,12 +646,36 @@ def main():
     ap.add_argument("--disk", help="also write an empty, labelled disk image here (a Micropolis 1558 by default)")
     ap.add_argument("--size", type=int, help="make the disk this many MB instead, up to 1024: / and swap only")
     ap.add_argument("--swap", type=int, default=32, help="swap partition size in MB with --size (default 32)")
+    ap.add_argument("--root", type=int, metavar="MB", help="with --size, give / this many MB and /usr the "
+                    "rest, after swap: the layout 4.0.3's sunupgrade needs")
     ap.add_argument("--no-label", action="store_true", help="leave that disk all zero, for format to label")
+    ap.add_argument("--patch", metavar="QIC", help="teach the format.dat files on a .qic built earlier "
+                    "the --size disks, in place")
+    ap.add_argument("--no-patch", action="store_true", help="build the tape exactly as it came")
     ap.add_argument("-v", "--verbose", action="store_true", help="list every file")
     a = ap.parse_args()
 
+    if a.patch:
+        if a.inputs or a.no_patch:
+            ap.error("--patch takes a .qic on its own")
+        vols, starts = read_qic(a.patch)
+        old = [list(v) for v in vols]
+        if patch_volumes(vols):
+            with open(a.patch, "r+b") as f:     # every file keeps its size, so in place
+                for vi, files in enumerate(vols):
+                    for fi, data in enumerate(files):
+                        if data is not old[vi][fi]:
+                            f.seek(starts[vi][fi] * BLOCK)
+                            f.write(data)
+        else:
+            print(f"{a.patch}: nothing to patch")
+        if not a.disk:
+            return
+
     if a.disk:
-        g = sized_disk(a.size, a.swap) if a.size else micropolis_1558()
+        if a.root and not a.size:
+            ap.error("--root goes with --size")
+        g = sized_disk(a.size, a.swap, a.root) if a.size else micropolis_1558()
         assert g["pcyl"] * g["nhead"] * g["nsect"] <= MAX_DISK_BLOCKS
         with open(a.disk, "wb") as f:
             if not a.no_label:
@@ -277,12 +683,16 @@ def main():
                 f.write(boot_stub())
             f.truncate(disk_bytes(g))
         cyl = g["nhead"] * g["nsect"]
-        layout = ", ".join(f"{p} {n * cyl * BLOCK // 1048576} MB"
+        layout = ", ".join(f"{p} {round(n * cyl * BLOCK / 1048576, 1):g} MB"
                            for p, (c, n) in sorted(g["parts"].items()) if p != "c")
         print(f'{a.disk}: {g["name"]}, {disk_bytes(g)} bytes, '
               + ("blank" if a.no_label else f"labelled: {layout}"))
-        if a.size and not a.no_label:
-            print("\nSunOS 4.0's format does not know this disk.  On the miniroot, before\n"
+        if a.size and not a.no_label and a.size in TAPE_DISK_SIZES:
+            print(f'\nformat knows this disk as "{g["name"]}" on any tape mktape has built or\n'
+                  "patched (see --patch), so suninstall can label it as it is.")
+        elif a.size and not a.no_label:
+            print(f"\nSunOS 4.0's format does not know this disk, and mktape teaches the tape\n"
+                  f"only the {', '.join(map(str, TAPE_DISK_SIZES))} MB ones.  On the miniroot, before\n"
                   "suninstall, add these two lines to /etc/format.dat:\n")
             print(format_dat(g))
 
@@ -303,6 +713,8 @@ def main():
     for i, v in enumerate(vols):
         if len(v) > MAX_FILES:
             sys.exit(f"mktape: volume {i+1} has {len(v)} files; the format holds {MAX_FILES}")
+    if not a.no_patch:
+        patch_volumes(vols)
 
     header = bytearray(BLOCK)
     struct.pack_into(">4s4sII", header, 0, b"SUN2", b"TAPE", 1, len(vols))

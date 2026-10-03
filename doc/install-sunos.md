@@ -10,12 +10,11 @@ volumes, April 1988). The common **4.0.3** set, 700-2157-10, is the *upgrade*
 release: its miniroot runs only `sunupgrade`, which upgrades an existing 4.0 or
 4.0.1 system, and has no `suninstall`. So 4.0 first, then 4.0.3 over it.
 
-Everything below up to and including SunView on the installed system has been
-done on a MiSTer, with the screens quoted from it; the whole install, both tapes
-and every package, takes about an hour. Only the 4.0.3 upgrade follows Sun's
-*Installing the SunOS 4.0.3 Release* (800-3812-10A) and the upgrade tape's own
-README without having been run
-here yet.
+All of it has been done on a MiSTer, with the screens quoted from it: the
+install onto the Micropolis disk and onto a 1 GB one, SunView, and the 4.0.3
+upgrade. The install, both tapes and every package, takes about an hour on the
+Micropolis and an hour and a half on 1 GB, most of the difference being `newfs`;
+the upgrade takes under an hour.
 
 ## 1. Make the images, on a PC
 
@@ -30,6 +29,12 @@ tools/mktape --disk sd0.img
 
 * A `.qic` is the whole set: both volumes, every file in order. The OSD's
   *Tape volume* picks which cartridge is in the drive.
+* `mktape` changes one thing on the way: every `/etc/format.dat` on the tape
+  (the miniroot's, MUNIX's, the root tar's and Install's) learns the 128, 256,
+  512 and 1024 MB disks `--size` makes, so `format` can label them. Nothing else
+  changes, and no tape file changes size. `--no-patch` leaves the tape as it
+  came; `tools/mktape --patch old.qic` brings a tape built before this up to
+  date, in place, and replaces the entries an older `mktape` added.
 * `sd0.img` is a 329 MB Micropolis 1558 (1218 cylinders, 15 heads, 35
   sectors), empty but already labelled -- `/` 16 MB on `a`, swap 32 MB on `b`,
   `/usr` 278 MB on `g` -- so `format` is not needed. Until SunOS is installed
@@ -37,8 +42,8 @@ tools/mktape --disk sd0.img
 
 Copy all three, with `boot0.rom`, to `/media/fat/games/Sun-2/` on the MiSTer.
 The names are free -- the OSD browses for them -- as long as disks end in
-`.img` or `.vhd` and tapes in `.qic`. For a bigger disk, with just `/` and
-swap, see [A 1 GB disk](#a-1-gb-disk) at the end.
+`.img` or `.vhd` and tapes in `.qic`. For a bigger disk, see
+[A 1 GB disk](#a-1-gb-disk) at the end.
 
 ## 2. Mount them
 
@@ -194,25 +199,23 @@ SunView.
 
 ## 7. Upgrade to 4.0.3 (optional)
 
-*(Not yet run here. This follows the upgrade tape's own
-`/usr/etc/upgrade/README` and the `sunupgrade` scripts beside it, read off the
-4.0.3 miniroot; the prompts below are quoted from those scripts.)*
-
 The 4.0.3 tapes upgrade a running 4.0 or 4.0.1 system in place: `sunupgrade`
-mounts the installed disk under `/a` and extracts the new files over it.
+mounts the installed disk under `/a` and extracts the new files over it. Done
+here on the 1 GB disk below, in about fifty minutes.
 
 **It needs a separate `/usr`.** `sunupgrade` decides what kind of machine it is
-upgrading from the installed disk's `/etc/fstab`, and a system with no `/usr`
-file system of its own looks to it like a *dataless client*, whose `/usr` comes
-from a server over the network -- which it then tries to mount. The standard
-layout (`/usr` on `g`, as in step 5) is fine; the 1 GB root-and-swap layout
-below is not.
+upgrading from the installed disk's `/etc/fstab` (`get_machtype`), and a system
+with no 4.2 `/usr` file system of its own looks to it like a *dataless client*,
+whose `/usr` comes from a server over the network -- which it then tries to
+mount. The standard layout (`/usr` on `g`, as in step 5) is fine, and so is the
+1 GB disk made with `--root`; the 1 GB root-and-swap layout is not.
 
 1. **Back up the disk image first** -- Sun's README says so in capitals, and a
    copy of the image is a complete, bootable copy of the machine.
-2. Shut the 4.0 system down cleanly (`sync`, then L1-A, or `/etc/halt`).
-3. In the OSD, mount `sunos-4.0.3-sun2.qic` as the tape, *Tape volume* `1`.
-   Leave the installed disk mounted.
+2. Shut the 4.0 system down cleanly: log in as root and `/etc/halt`.
+3. Mount `sunos-4.0.3-sun2.qic` as the tape, *Tape volume* `1`, with the
+   installed disk still mounted, and reset. The PROM now finds SunOS on the
+   disk and boots it: let it reach `login:`, log in, and `/etc/halt` again.
 4. Copy the 4.0.3 miniroot onto swap and boot it, as in steps 3 and 4 -- the
    upgrade tape has its files in the same places. This only overwrites the
    swap partition; `/` and `/usr` are not touched:
@@ -220,36 +223,58 @@ below is not.
    ```
    > b st()
    Boot: st(0,0,2)
+   Size: 20536+5856+82752 bytes
+   Standalone Copy
    From: st(0,0,3)
    To: sd(0,0,1)
+   Copy completed - 6154240 bytes
    Boot: sd(0,0,1)vmunix
+   SunOS Release 4.0.3 (SUNUPGRADE) #1: Wed Apr 19 17:17:24 PDT 1989
+   ...
+   root on sd0b fstype 4.2
+   swap on sd0b fstype spec size 32256K
+   #
    ```
 
-   The kernel calls itself `SunOS Release 4.0.3 (SUNUPGRADE)`. Answer its
-   questions as before, then make the miniroot writable -- `sunupgrade` writes
-   into its `/tmp`, `/dev` and its own directory:
+   It asks nothing about root and swap, unlike 4.0's. Make it writable --
+   `sunupgrade` writes into its `/tmp`, `/dev` and its own directory:
 
    ```
    # mount -o remount /dev/sd0b /
    ```
 
-5. Run it, in single-user mode, as the miniroot is:
+5. Run it:
 
    ```
    # cd /usr/etc/upgrade
-   # sunupgrade
+   # ./sunupgrade
    Enter root disk partition for sun2 architecture (e.g. xy0a): sd0a
+   Wait ...
+   Is this a file-server (as opposed to standalone/dataless-client) ? (y/n): n
    Where is the tape drive located? (local | remote): local
    Enter controller type ( st | mt | xt ): st
-   ...
+   Extracting TOC (Table Of Contents)
    Starting upgrade now. Continue ? (y/n): y
    This is going to take some time.
+   Extracting "root" files
+   Extracting "usr" files
+   Extracting "Kvm" files
+   Extracting "Install" files
+   Load tape volume 2 for sun2 and <RETURN>
    ```
 
-   It checks the tape is a 4.0.3 sun2 release, mounts `/dev/sd0a` on `/a`
-   and the rest of the installed `fstab` under it, and extracts. If it asks
-   for the second volume, set *Tape volume* to `2` in the OSD and press
-   Return, as during the install.
+   `Wait ...` is `fsck` and the mounts under `/a`, a few minutes on 1 GB. At
+   the volume prompt set *Tape volume* to `2` in the OSD and press Return, as
+   during the install. It ends:
+
+   ```
+   Installing bootblock to root partition /dev/rsd0a ..
+   Installing /sbin files ..
+   Doing file system checks
+   ...
+   sunupgrade: Done upgrading to 4.0.3.
+   ```
+
 6. **The small kernel, before rebooting.** 4.0.3 comes with a preconfigured
    small kernel for SCSI-only machines -- which this is -- and the script that
    installs it depends on files `sunupgrade` has just left, so the README says
@@ -258,11 +283,22 @@ below is not.
    ```
    # /usr/etc/upgrade/install_small_kernel
    Do you wish to continue? (y/n):  y
-   Install small kernel on sun2? (y/n)  y
+   The small pre-configured kernel has been installed on:
+           sun2
    ```
 
-7. `sync`, L1-A, `b sd()`. The machine comes up on 4.0.3; the old kernel is
-   kept beside the new one under a `pre`-release name.
+   It keeps the GENERIC kernel as `/vmunix.orig` (and `sunupgrade` kept 4.0's
+   as `/vmunix.pre_4.0.3`), so `b sd()vmunix.orig` is the way back if the small
+   one ever will not do.
+7. `sync`, L1-A, `b sd()`:
+
+   ```
+   SunOS Release 4.0.3 (GENERIC_SMALL) #1: Mon Apr 24 15:28:53 PDT 1989
+   ...
+   sun2 login:
+   ```
+
+   The small kernel leaves 7,278,592 bytes free against GENERIC's 7,098,368.
 8. **Customised files are not overwritten.** Files under `/etc` and `/var`
    that the upgrade carries new versions of are installed beside the old ones
    with the release as a suffix (Sun's example: `rc.local-4.0_REV_B` next to
@@ -273,20 +309,42 @@ below is not.
 
 ## A 1 GB disk
 
-*(The disk image and the `format.dat` lines are checked; the install onto this
-layout has not been run here yet.)*
-
 1 GiB is the most a Sun-2 can address: every Sun-2 SCSI driver sends the
-six-byte READ and WRITE, whose block address is 21 bits. To install onto a
-disk that size with one big root and swap -- no separate `/usr`.
+six-byte READ and WRITE, whose block address is 21 bits. `mktape` makes a disk
+that size in two layouts:
 
-**This layout cannot be upgraded to 4.0.3 with `sunupgrade`**, which takes a
-system without its own `/usr` file system for a dataless client (see step 7).
-Install it to stay on 4.0, or keep the standard layout if 4.0.3 is the goal.
+```sh
+tools/mktape --disk sd0-1g.img --size 1024 --root 32   # / 31.5 MB, swap 31.5 MB, /usr 960 MB
+tools/mktape --disk sd0-1g.img --size 1024             # / 991.5 MB, swap 31.5 MB
+```
 
-### How big to make swap
+**The first is the one to use, and the one done here**: installed from the 4.0
+tapes, booted, and upgraded to 4.0.3 on a MiSTer. The second, root and swap
+only, cannot be upgraded -- `sunupgrade` takes it for a dataless client (step
+7) -- and has not been installed here, though nothing in it differs in kind.
 
-**32 MB, with `/` taking the rest -- 991 MB.** That is `mktape`'s default:
+Both are 16 heads of 64 sectors on 2048 cylinders, two of them alternates, and
+the tape already knows them as `MiSTer 1024MB` (step 1), so nothing has to be
+typed into `format.dat`.
+
+**Why 31.5 MB and not 32.** The standalone disk driver -- in the copy program,
+`tpboot`, and the installed system's `boot` -- keeps a partition's size in 16
+bits and clips every transfer to it. A partition of exactly 32 MB is 65536
+blocks, which it reads as 0, so the miniroot copy fails at once:
+
+```
+To: sd(0,0,1)
+Write error
+Copy completed - 0 bytes
+```
+
+and a 32 MB root would leave `boot` unable to read the kernel. So `mktape`
+keeps `a` and `b` a cylinder clear of any multiple of 32 MB, whatever `--root`
+and `--swap` ask for. The kernel's own driver has no such limit.
+
+### How big to make swap and root
+
+**Swap 32 MB** (`--swap`, 31.5 after the above):
 
 * The miniroot (5.9 MB) has to fit in swap during the install, and a crash
   dump goes there too and needs the size of memory, 8 MB.
@@ -294,74 +352,103 @@ Install it to stay on 4.0, or keep the standard layout if 4.0.3 is the goal.
   swap is in effect how much memory all running programs can have between
   them. SunView and a few tools want tens of megabytes; 32 MB, four times the
   machine's memory, is comfortable.
-* Beyond that it buys nothing on an 8 MB machine, and every 32 MB is only 3%
-  of the disk either way.
+* Beyond that it buys nothing on an 8 MB machine.
 
-Cylinders are half a megabyte, so `--swap` is rounded to that.
+**Root 32 MB** (`--root`): a full 4.0 install puts 1.5 MB there, and 4.0.3
+brings it to 3.2 MB, with the old and the GENERIC kernels kept beside the new
+one. `/var` and `/tmp` live in it too, which is what the rest is for.
 
 ### Steps
 
-1. Keep a copy of any disk you want back (a copy of the image is a bootable
-   copy of the machine).
-2. Make the disk:
-
-   ```sh
-   tools/mktape --disk sd0-1g.img --size 1024
-   ```
-
-   It is 16 heads of 64 sectors on 2048 cylinders, two of them alternates:
-   `/` 991 MB on `a`, swap 32 MB on `b` at the end. `mktape` prints the two
-   lines step 4 needs.
-3. Mount it as the *SCSI disk*, the 4.0 tape at volume 1, reset, and do steps
-   3 and 4 above unchanged: copy the miniroot to `sd(0,0,1)`, boot it, remount
-   it and empty `/etc/mtab`.
-4. Before suninstall, tell `format` about the disk. SunOS 4.0's
-   `/etc/format.dat` knows no SCSI disk bigger than the 327 MB Micropolis, and
-   suninstall labels the disk with `format`:
+1. Make the disk, as above, and mount it as the *SCSI disk* with the 4.0 tape
+   at volume 1. Reset.
+2. Steps 3 and 4 unchanged: copy the miniroot to `sd(0,0,1)`, boot it, remount
+   it and empty `/etc/mtab`. The kernel reports
+   `sd0: <MiSTer 1024MB cyl 2046 alt 2 hd 16 sec 64>`.
+3. suninstall as in step 5, the disk form showing the label:
 
    ```
-   # cp /etc/format.dat /etc/format.dat.orig
-   # echo 'disk_type = "MiSTer 1024MB" : ctlr = MD21 : ncyl = 2046 : acyl = 2 : pcyl = 2048 : nhead = 16 : nsect = 64 : rpm = 3600 : bpt = 32768' >> /etc/format.dat
-   # echo 'partition = "MiSTer 1024MB" : disk = "MiSTer 1024MB" : ctlr = MD21 : a = 0, 2029568 : b = 1982, 65536 : c = 0, 2095104' >> /etc/format.dat
-   # tail -2 /etc/format.dat
+   PARTITION START_CYL BLOCKS    SIZE     MOUNT PT        PRESERVE(Y/N)
+       a     0         64512     33       /               n
+       b     63        64512     33
+       c     0         2095104   1072
+       g     126       1966080   1006     /usr            n
    ```
 
-   Check them; after a typo, `cp /etc/format.dat.orig /etc/format.dat` and
-   type them again. These lines are for the default 32 MB swap: another
-   `--size` or `--swap` gives other numbers, so use the lines `mktape`
-   printed.
-5. `TERM=sun; export TERM`, `suninstall`, and the forms as in step 5, except
-   the disk form: label **existing**, free hog **a**, and only `a` gets a
-   mount point, `/` (preserve `n`); `b` and `c` stay empty.
-6. Boot it as in step 6. `newfs` and the `fsck` on every boot take longer on
-   a root this size than on 16 MB.
+   Label **existing**, free hog **g**, `/` on `a` and `/usr` on `g`, neither
+   preserved. (SIZE is in millions of bytes.) It labels the disk and makes the
+   file systems:
 
-### Getting the most out of the root
+   ```
+   Label disk(s) :
+           sd0
+   Create/Check File Systems :
+   /dev/rsd0a:     64512 sectors in 63 cylinders of 16 tracks, 64 sectors
+           33.0Mb in 4 cyl groups (16 c/g, 8.39Mb/g, 2048 i/g)
+   /dev/rsd0g:     1966080 sectors in 1920 cylinders of 16 tracks, 64 sectors
+           1006.6Mb in 120 cyl groups (16 c/g, 8.39Mb/g, 2048 i/g)
+   ...
+   /dev/rsd0a: 356 files, 1533 used, 29618 free
+   /dev/rsd0g: 6653 files, 53547 used, 896835 free
+   System installation completed.
+   ```
 
-The partition split is the small decision. Two things `newfs` does cost more,
-and suninstall runs `newfs` with its defaults:
+4. Boot it as in step 6, and upgrade it as in step 7 if you want 4.0.3:
 
-* **10% is kept back for root** -- about 99 MB here. After the install, boot
-  single-user and lower it:
+   ```
+   Filesystem            kbytes    used   avail capacity  Mounted on
+   /dev/sd0a              31151    3236   24799    12%    /
+   /dev/sd0g             950382   58849  796494     7%    /usr
+   ```
+
+**Once, on 4.0's second boot**, `/usr` came up `SUMMARY INFORMATION BAD
+(SALVAGED)` and `rc` stopped in single user with `Reboot failed...help!`, after
+a clean `/etc/halt`. `fsck -n /dev/rsd0g` then found nothing wrong -- the
+preen pass had already fixed it -- and `/etc/halt` and a fresh boot carried on.
+It has not recurred on 4.0.3, through a reboot and the upgrade's own checks.
+If you meet it, `fsck /dev/rsd0g` and reboot.
+
+### Getting the most out of /usr
+
+suninstall runs `newfs` with its defaults, and two of them cost more on a big
+file system than the partition split does:
+
+* **10% is kept back for root** -- about 95 MB of `/usr`. After the install,
+  boot single-user and lower it:
 
   ```
   > b sd()vmunix -s
-  # tunefs -m 2 /dev/rsd0a
+  # tunefs -m 2 /dev/rsd0g
   ```
 
   then go straight to L1-A and `b sd()` -- **without** `sync`, which can write
   the old superblock held in memory back over the one `tunefs` just changed.
-  That gives about 80 MB back to everyone.
-* **One inode for every 2 KB** of disk: about half a million inodes on a
-  991 MB root, roughly 60 MB of inode tables, against the 7,000 or so files a
-  full install has. Only `newfs` sets this. One way round it -- *untried
-  here*, so an experiment: on the miniroot, before suninstall, run
-  `newfs -i 8192 /dev/rsd0a` yourself, and in the disk form answer preserve
-  **y** for `a`, so suninstall installs into that file system instead of
-  making its own. That would bring the inode tables to about 15 MB.
+* **One inode for every 2 KB** of disk: about half a million inodes on 960 MB,
+  roughly 60 MB of inode tables, against the 7,000 or so files a full install
+  has. Only `newfs` sets this. One way round it -- *untried here*, so an
+  experiment: on the miniroot, before suninstall, run `newfs -i 8192
+  /dev/rsd0g` yourself, and in the disk form answer preserve **y** for `g`, so
+  suninstall installs into that file system instead of making its own.
 
-A full install uses about 55 MB, so even with neither change there is well over
-800 MB free.
+**Any other size** `--size` makes is not on the tape unless it is 128, 256 or
+512 MB; `mktape` prints the two `format.dat` lines for it, to add to the
+miniroot's copy before suninstall:
+
+```
+# cp /etc/format.dat /etc/format.dat.orig
+# echo '<the disk_type line mktape printed>' >> /etc/format.dat
+# echo '<the partition line>' >> /etc/format.dat
+```
+
+**Why `format.dat` matters at all.** suninstall labels the disk with `format`,
+and SunOS reports this machine's SCSI disk as an Adaptec ACB4000 -- `format`
+offers the ACB4000 types for it. Given a labelled disk of a type it does not
+know, `format` builds one from the label but stops to ask for the two things an
+ACB4000 type carries and a label does not, `Need info -- Enter buffer skew` and
+`write precomp cylinder`; and choosing that built type again from its `type`
+menu crashed it (`Memory fault - core dumped`). The tape's entries are ACB4000
+ones with both filled in, and `format` then selects the disk without a
+question.
 
 ## Notes
 
@@ -373,6 +460,8 @@ A full install uses about 55 MB, so even with neither change there is well over
 * **The date.** The time-of-day chip comes up at December 1987 for now; set the
   date with `date` once the system runs.
 * **Small kernel.** GENERIC carries drivers for hardware this machine does not
-  have. Build a smaller one from the *Sys* files once the system is up.
+  have. On 4.0.3, step 7's `install_small_kernel` puts in Sun's own
+  (`GENERIC_SMALL`), which finds everything this machine has; on 4.0, build a
+  smaller one from the *Sys* files once the system is up.
 * **The tape is read only.** Writes, file marks and erase are refused as write
   protected, as a cartridge with its tab set would be.

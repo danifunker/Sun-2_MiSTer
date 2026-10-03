@@ -15,11 +15,13 @@ still describes the machine.
 
 ## MiSTer
 
-**Status: SunOS 4.0 installs from tape and runs, SunView included.** On a
-MiSTer the core boots the PROM, installs SunOS 4.0 from the release tapes onto
-a disk image (both volumes, every package), and boots that disk multi-user to a
-login and `suntools`. Not there yet: networking, sound (the keyboard bell),
-colour (the cgtwo), and the date (the clock starts in December 1987).
+**Status: SunOS 4.0 installs from tape and runs, SunView included, and 4.0.3
+upgrades it.** On a MiSTer the core boots the PROM, installs SunOS 4.0 from the
+release tapes onto a disk image (both volumes, every package), boots that disk
+multi-user to a login and `suntools`, and takes the 4.0.3 upgrade tapes over it
+to a 4.0.3 login -- on disks up to the Sun-2's 1 GiB limit. Not there yet:
+networking, sound (the keyboard bell), colour (the cgtwo), and the date (the
+clock starts in December 1987).
 
 What a user needs:
 
@@ -62,16 +64,28 @@ with `b st()`.
 **Disks.** `tools/mktape --disk` writes an empty disk, already labelled, with a
 boot block that says how to install until SunOS replaces it:
 
-    tools/mktape --disk sd0.img                  # Micropolis 1558, 329 MB: / 16, swap 32, /usr 278
-    tools/mktape --disk sd0-1g.img --size 1024   # 1 GiB: / 991 MB and swap 32 MB (--swap MB)
+    tools/mktape --disk sd0.img                            # Micropolis 1558, 329 MB: / 16, swap 32, /usr 278
+    tools/mktape --disk sd0-1g.img --size 1024 --root 32   # 1 GiB: / 31.5, swap 31.5, /usr 960
+    tools/mktape --disk sd0-1g.img --size 1024             # 1 GiB: / 991.5 and swap 31.5 (--swap MB)
 
 `--size` takes 16 to 1024 MB. **1 GiB is the most a Sun-2 can use**: every
 Sun-2 SCSI driver -- the PROM's, the standalone one, the kernel's -- sends the
-six-byte READ and WRITE, whose block address is 21 bits. A `--size` disk is
-not in SunOS 4.0's `/etc/format.dat`, so `mktape` prints two lines to add to the
-miniroot's copy before running suninstall. Note that 4.0.3's `sunupgrade` needs
-a separate `/usr`: it takes a root-and-swap disk for a dataless client, so
-install on the default layout if you mean to upgrade.
+six-byte READ and WRITE, whose block address is 21 bits. The 1 GiB disk with
+`--root` has been installed from the 4.0 tapes and upgraded to 4.0.3 on a
+MiSTer; without `--root` there is no separate `/usr`, and 4.0.3's
+`sunupgrade` takes such a disk for a dataless client. Swap and root come out at
+31.5 MB rather than 32 because the standalone disk driver -- the copy program,
+`tpboot`, `boot` -- keeps a partition's size in 16 bits, and a 32 MB partition
+is 65536 blocks, which it reads as nothing at all.
+
+A `--size` disk is not in SunOS 4.0's `/etc/format.dat`, and suninstall labels
+the disk with `format`, so `mktape` patches every `format.dat` on a tape it
+builds -- the miniroot's, MUNIX's and the ones in the root and Install tars --
+to know the 128, 256, 512 and 1024 MB disks, as Adaptec ACB4000 types, which is
+what SunOS takes this machine's SCSI disk for. Nothing else on the tape changes,
+and no tape file changes size; `--no-patch` builds it as it came, and
+`tools/mktape --patch old.qic` updates a tape built earlier, in place. For
+other sizes `mktape` prints the two lines to add by hand.
 
 [doc/install-sunos.md](doc/install-sunos.md) is the whole install, step by step,
 as done on a MiSTer, with the 1 GiB variant at the end.
@@ -118,7 +132,7 @@ generated sources.
 | `sys/` | Template_MiSTer's framework, verbatim |
 | `doc/prom/` | an annotated disassembly of the boot PROM |
 | `tb/verilator/` | unit tests for the MiSTer glue and the tape drive: `make -C tb/verilator` (Verilator 5); `make -C tb/verilator tb_emu` runs the whole core, `TAPE=`/`DISK=`/`KEYS=` to feed it |
-| `tools/mktape` | tape images (`.qic`) from a SunOS release, and an empty labelled disk to install onto |
+| `tools/mktape` | tape images (`.qic`) from a SunOS release, their `format.dat` taught the disks it makes, and an empty labelled disk to install onto |
 
 ## What it does
 
