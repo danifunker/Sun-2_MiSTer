@@ -28,15 +28,22 @@ see below), and **colour**: the Sun-2 colour board, which SunOS attaches as
 
 What a user needs:
 
-* **The core**, from [`releases/`](releases/): `Sun-2_20261004.rbf`, with
-  `boot0.rom` and `MiSTer`, a Main_MiSTer with Sun support, beside it.
-  [`releases/README.md`](releases/README.md) says where each one goes.
+* **The core**, from [`releases/`](releases/): `Sun-2_20261004.rbf`, for
+  `_Computer/` (or `_Unstable/`). Beside it are `boot0.rom` (below) and
+  `MiSTer`, a Main_MiSTer with Sun support for the network and the ID PROM:
+  upstream Main_MiSTer `57276f0` with the `sun-family` branch (`635a7a5`) of
+  [danifunker/Main_MiSTer](https://github.com/danifunker/Main_MiSTer/tree/sun-family)
+  on it, GPL-3.0 like Main_MiSTer itself. It replaces `/media/fat/MiSTer`. A
+  running Main cannot be overwritten in place, so keep the old one, copy the new
+  one to `/media/fat/MiSTer.new`, `mv` it over `/media/fat/MiSTer`, and reboot
+  the MiSTer. Without it the core runs, but its Ethernet goes nowhere.
 * **A MiSTer with an SDRAM board** (32 MB or more). Main memory, the mono
   frame buffer and the colour board's megabyte live there.
 * **The boot PROM**, as `games/Sun-2/boot0.rom`: the 32 KiB Sun-2/50 / 2/160
   Rev Q PROM image (sha256 `8560ef68…4a3f`, the same image as
-  `Inputs/boot0.rom`). It is not in the bitstream. Main_MiSTer loads it at
-  start-up, and the machine stays in reset until it has.
+  `releases/boot0.rom` and `Inputs/boot0.rom`). It is not in the bitstream.
+  Main_MiSTer loads it at start-up, and the machine stays in reset until it
+  has.
 * **A disk image** for the OSD's *SCSI disk (sd0)* entry, and to install onto
   it, **a tape image** for *Tape (st0)* -- both described below.
 
