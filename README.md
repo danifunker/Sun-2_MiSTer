@@ -268,21 +268,23 @@ machine its own:
   address, four of date, three of serial number, a checksum that makes the XOR
   of the first sixteen bytes zero, and sixteen bytes of `0xFF`. A dump of a
   real 2/50 or 2/160's PROM works as it is.
-* **Main_MiSTer with Sun-2 support** (below) makes one by itself when there is
+* **Main_MiSTer with Sun support** (below) makes one by itself when there is
   no `boot1.rom`: Sun's prefix `08:00:20` and the last three bytes of the
   MiSTer's own Ethernet address, which are the serial number as well.
 
 **The network** is the CPU board's own Intel 82586, whole in the FPGA. The core
 plays the transceiver behind it and passes its frames through DDR3 to
 Main_MiSTer, which puts them on a host interface -- the same arrangement the
-NeXT and Minimig A2065 cores use. **It needs a Main_MiSTer with Sun-2 support**
-(`support/sun2/`); without it the 82586 is on a cable to nowhere, and SunOS
-attaches `ie0` all the same. *Network* in the OSD picks the host side:
+NeXT and Minimig A2065 cores use, and the same mailbox and daemon as the
+SPARCstation core. **It needs a Main_MiSTer with Sun support**
+(`support/sun/`, Main_MiSTer branch `sun-family`); without it the 82586 is on
+a cable to nowhere, and SunOS attaches `ie0` all the same. *Network* in the OSD
+picks the host side, in the SPARCstation core's order:
 
 | Network | what it is |
 |---|---|
+| eth0 (the default) | MiSTer's own Ethernet port, shared: the Sun is a second machine on the LAN, with its own address |
 | Off | no cable |
-| eth0 | MiSTer's own Ethernet port, shared: the Sun is a second machine on the LAN, with its own address |
 | eth1 | a second port (a USB adapter), the Sun's alone |
 | macvlan | a virtual port on eth0 with the Sun's address |
 | tap0 | a tap interface on the MiSTer, for routing it yourself |

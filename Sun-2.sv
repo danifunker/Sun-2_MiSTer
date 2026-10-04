@@ -67,7 +67,7 @@ module emu
         "O[6:5],Scale,V-Integer,Normal,Narrower HV-Integer,Wider HV-Integer;",
         "-;",
         "O[8:7],Keyboard bell,Normal,Loud,Quiet,Off;",
-        "O[11:9],Network,Off,eth0,eth1,macvlan,tap0;",
+        "O[11:9],Network,eth0,Off,eth1,macvlan,tap0;",
         "-;",
         "R0,Reset;",
         "V,v",`BUILD_DATE
@@ -400,9 +400,13 @@ module emu
     );
 
     // ---- the network ----------------------------------------------------------------------
-    // The PHY behind the 82586: frames to and from Main_MiSTer's Sun-2 support
-    // through a mailbox in DDR3 (rtl/sun2_mister_enet.sv).  The OSD's Network
-    // picks the host side; Main reads it from the same status bits.
+    // The PHY behind the 82586: frames to and from Main_MiSTer's Sun support
+    // (support/sun, which serves the SPARCstation core too) through a mailbox
+    // in DDR3 (rtl/sun2_mister_enet.sv).  The OSD's Network picks the host
+    // side, in the SPARC core's order -- eth0 (the default, 0), Off (1), eth1,
+    // macvlan, tap0 -- and Main reads it from the same status bits.  The
+    // mailbox is published each time the machine leaves reset, which is after
+    // Main has started and sent boot0.rom.
     wire [3:0] mii_txd, mii_rxd;
     wire       mii_tx_en, mii_rx_dv, mii_crs, eth_loopback_n;
 
@@ -416,7 +420,8 @@ module emu
         .rst              (reset_mem),
         .mii_clk          (clk_mii),
         .mii_rst          (reset_mii),
-        .enable           (status[11:9] != 3'd0),
+        .restart          (machine_reset_raw),
+        .enable           (status[11:9] != 3'd1),
         .loopback_n       (eth_loopback_n),
         .mac              (idp_mac),
 

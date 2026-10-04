@@ -15,7 +15,8 @@
 //                         time the keyboard's beeper sounds: for how long, and
 //                         the loudest sample it put on AUDIO_L; and every
 //                         Ethernet frame the machine puts in the network's
-//                         DDR3 mailbox (with +status=200, Network eth0)
+//                         DDR3 mailbox (Network eth0 is the default;
+//                         +status=200 is Off)
 //
 //  Plusargs (and hps_io_model.sv's): +timeout_ms=<ms> (default 3000),
 //  +heartbeat_ms=<ms> (default 100).
@@ -62,8 +63,9 @@ sdram_model chip (
 
 // ---- DDR3: the network's mailbox, and what is sent through it ------------------------
 // The 64 KiB window at 0x1FF00000, answering a read two clocks after it is
-// taken.  Nothing plays the daemon: a frame transmitted is logged, with its
-// addresses and type, and nothing is ever delivered.
+// taken.  The bench plays the transmit half of Main's daemon: a frame posted
+// is logged, with its addresses and type, and taken (TX_RPTR follows, or the
+// ring would fill and hold the 82586); nothing is ever delivered.
 localparam [28:0] DDR_BASE = 29'h03FE0000;
 reg  [63:0] ddr [0:8191];
 reg  [63:0] ddr_q = 64'd0;
@@ -85,28 +87,33 @@ always @(posedge DDRAM_CLK) begin
     if (ddr_rd_pipe[0]) ddr_q <= ddr[ddr_rd_addr];
 end
 
+// The layout is rtl/sun2_mister_enet.sv's: MAGIC, GEN, TX_WPTR, TX_RPTR, ...,
+// the MAC in word 6, the TX ring of eight at 0x1000.
 function automatic [7:0] tx_byte(input int slot, input int i);
-    int o = 'h800 + 'h800 * slot + 8 + i;
+    int o = 'h1000 + 'h800 * slot + 8 + i;
     tx_byte = ddr[o / 8][(o % 8) * 8 +: 8];
 endfunction
 
-longint tx_seen = 0, magic_seen = 0;
+longint unsigned tx_taken = 0, magic_seen = 0, gen_seen = 0;
 always @(posedge DDRAM_CLK) begin
-    if (ddr[0] != magic_seen) begin
+    if (ddr[0] != magic_seen || (ddr[0] != 0 && ddr[1] != gen_seen)) begin
         magic_seen = ddr[0];
-        $display("[%0t] ether: mailbox magic %h, MAC %h", $time, ddr[0], ddr[4]);
+        gen_seen   = ddr[1];
+        $display("[%0t] ether: mailbox magic %h, generation %h, MAC %h", $time, ddr[0], ddr[1], ddr[6]);
     end
-    if (ddr[1] != tx_seen && ddr[1] != 0) begin
-        int slot = int'(tx_seen % 4);
-        int n    = int'(ddr[('h800 + 'h800 * slot) / 8] & 64'h7FF);
+    if (ddr[0] == 0) tx_taken = 0;
+    else if (ddr[2] != tx_taken && ddr[2] - ddr[3] <= 8) begin
+        int slot = int'(tx_taken % 8);
+        int n    = int'(ddr[('h1000 + 'h800 * slot) / 8] & 64'h7FF);
         string d = "";
         for (int i = 0; i < 6; i++) d = {d, $sformatf("%s%02x", i ? ":" : "", tx_byte(slot, i))};
         d = {d, " <- "};
         for (int i = 6; i < 12; i++) d = {d, $sformatf("%s%02x", i > 6 ? ":" : "", tx_byte(slot, i))};
-        $display("[%0t] ether: frame %0d out, %0d bytes, %s, type %02x%02x", $time, tx_seen + 1, n, d,
+        $display("[%0t] ether: frame %0d out, %0d bytes, %s, type %02x%02x", $time, tx_taken + 1, n, d,
                  tx_byte(slot, 12), tx_byte(slot, 13));
-        tx_seen = tx_seen + 1;
-    end else if (ddr[1] == 0) tx_seen = 0;
+        tx_taken = tx_taken + 1;
+        ddr[3]   = tx_taken;
+    end
 end
 
 // ---- the screen ----------------------------------------------------------------

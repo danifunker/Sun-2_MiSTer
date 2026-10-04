@@ -7,34 +7,48 @@
 // The 82586 (rtl/sun2-vme/sun2_ethernet.sv) is whole in the fabric and talks
 // MII.  This module is the PHY it talks to.  What it transmits is taken off
 // the MII -- preamble and FCS stripped -- and put in a ring in DDR3; what the
-// daemon puts in the other ring is played back into the MII with a preamble,
-// padding to the minimum length and a fresh FCS.  The daemon moves frames
-// between the rings and a host interface (Main_MiSTer support/sun2/, which
-// shares the host side with the NeXT and Minimig A2065 modules).
+// daemon puts in the other ring comes padded to the minimum length and with
+// its FCS, and is played into the MII as given, behind a preamble.  The daemon
+// (Main_MiSTer support/sun/sun_enet.cpp, which serves the SPARCstation core
+// too) moves frames between the rings and a host interface.
 //
-// The mailbox is the layout Main_MiSTer's NeXT Ethernet module uses, in the
-// same 64 KiB window -- one core runs at a time -- with its own magic and a
-// longer receive ring.  All words are 64-bit little-endian; byte i of a frame
-// is byte 8+i of its slot:
+// The mailbox is the SPARCstation core's (its rtl/mister/eth_hps.vhd), with
+// this core's own magic and a longer receive ring, from which Main knows the
+// ring's depth.  All words are 64-bit little-endian; byte i of a frame is byte
+// lane i mod 8 of word 1 + i/8 of its slot:
 //
-//   +0x0000  MAGIC     "SUN2ETH1" (0x53554E3245544831), written here last
-//   +0x0008  TX_WPTR   incremented here for every frame transmitted
-//   +0x0010  RX_WPTR   incremented by the daemon for every frame it delivers
-//   +0x0018  RX_RPTR   incremented here for every frame taken
-//   +0x0020  GUEST_MAC bit 63 valid, bits 47:0 the ID PROM's address
-//   +0x0800  TX slots:  4 x 2048 bytes, a 64-bit length, then the frame
-//   +0x2800  RX slots: 16 x 2048 bytes
+//   +0x0000  MAGIC    "S2ETH001" (0x5332455448303031), written here last
+//   +0x0008  GEN      a new value at every publish (Main resynchronises)
+//   +0x0010  TX_WPTR  ours: frames posted
+//   +0x0018  TX_RPTR  Main's: frames taken
+//   +0x0020  RX_WPTR  Main's: frames posted
+//   +0x0028  RX_RPTR  ours: frames taken
+//   +0x0030  MAC      ours: bit 63 valid, 47:40 the first byte .. 7:0 the last
+//   +0x1000  TX ring,  8 slots x 2048 bytes: header (10:0 the length), frame
+//   +0x5000  RX ring, 16 slots x 2048 bytes: header (10:0 the length with the
+//            FCS, 21:16 the destination's multicast hash, unused here), frame
 //
-// Sixteen receive slots, not the NeXT's four, because a host delivers in
-// bursts and this side drains at 10 Mb/s: an 8 KiB NFS read is six fragments
-// arriving together, and with four slots two of every six were dropped and
-// nothing reassembled -- measured on the board, 207 fragments in for 50
-// six-fragment datagrams, all 50 timed out.
+// Sixteen receive slots because a host delivers in bursts and this side
+// drains at 10 Mb/s: an 8 KiB NFS read is six fragments arriving together,
+// and with four slots two of every six were dropped and nothing reassembled --
+// measured on the board, 207 fragments in for 50 six-fragment datagrams.
 //
-// ARM physical 0x1FF00000, 64-bit word 0x03FE0000 on the DDRAM port.  The TX
-// ring is never waited on -- a daemon that falls behind loses the oldest
-// frames, as a busy wire would -- and the daemon never overwrites an RX slot
-// this side has not taken.
+// ARM physical 0x1FF00000, 64-bit word 0x03FE0000 on the DDRAM port.  The
+// mailbox is published -- every word zeroed bar a new GEN, then the MAC, the
+// magic last -- each time the machine leaves reset, and withdrawn when it
+// goes into reset again.  Main clears a stale magic when it starts, and then
+// sends the boot PROM, which holds the machine in reset; so the core's
+// publish always comes after Main's clear.  It stays published with the OSD's
+// Network at Off: Main reads that setting from the same status bits, and
+// closes the host side only while it sees the magic.
+//
+// Transmit: while the TX ring is full the frame is held here, and CRS with
+// it, so the 82586 defers; after TX_WAIT with no room Main is taken to be
+// gone and the frame is dropped.  That is well inside the chip's own give-up,
+// 2^16 nibble times (26 ms) of *continuous* carrier (mii_tx's DEFER_LIMIT),
+// whose count starts again whenever the line goes quiet.  With Network Off a
+// frame goes nowhere at once.  Main never overwrites an RX slot this side has
+// not taken; it drops what does not fit.
 //
 // Two clocks.  The MII side runs on the MII clock, 2.5 MHz: 10 Mb/s, the
 // 82586's own speed, and the speed its receive FIFO (256 bytes) and its DVMA
@@ -48,18 +62,16 @@
 //
 // The MII side.  CRS is the medium being busy, and the 82586 defers while it
 // is high: during its own transmission, while that frame is being copied out
-// to DDR3 (one buffer, so this is the flow control), and while a received
-// frame is being played in.  A received frame waits for the line to be quiet,
-// and leaves a gap twice the interframe space behind it so a waiting
-// transmission always gets the wire.  Every one of those is far shorter than
-// the 82586's own give-up of 2^16 nibble times.  There are no collisions: COL
-// is tied low where this is instantiated.
+// to DDR3 or waits for room there (one buffer, so this is the flow control),
+// and while a received frame is being played in.  A received frame waits for
+// the line to be quiet, and leaves a gap twice the interframe space behind it
+// so a waiting transmission always gets the wire.  There are no collisions:
+// COL is tied low where this is instantiated.
 //
 // LOOPB- in the Ethernet control register, at 0, is the cable unplugged:
 // nothing goes out, nothing comes in, and CRS stays low.  The drivers put the
 // chip in loopback while they configure it and need the line "quiet and
-// still" then (sunstand/if_ie.c); they never send through it.  With the OSD's
-// Network at Off, frames are sent into nothing and none arrive.
+// still" then (sunstand/if_ie.c); they never send through it.
 //
 `timescale 1ns / 1ps
 
@@ -71,6 +83,7 @@ module sun2_mister_enet #(
     input  wire        mii_clk,         // the MII side: the 82586's MII clocks
     input  wire        mii_rst,
 
+    input  wire        restart,         // asynchronous: the machine is in reset
     input  wire        enable,          // asynchronous: the OSD's Network is not Off
     input  wire        loopback_n,      // asynchronous: LOOPB-, 0 = the cable is out
     input  wire [47:0] mac,             // asynchronous, changes only at start-up
@@ -96,32 +109,39 @@ module sun2_mister_enet #(
 
     localparam [28:0] BASE     = 29'h03FE0000;      // byte 0x1FF00000
     localparam [28:0] A_MAGIC  = BASE + 29'h000;
-    localparam [28:0] A_TXWPTR = BASE + 29'h001;
-    localparam [28:0] A_RXWPTR = BASE + 29'h002;
-    localparam [28:0] A_RXRPTR = BASE + 29'h003;
-    localparam [28:0] A_MAC    = BASE + 29'h004;
-    localparam [28:0] A_TXSLOT = BASE + 29'h100;    // byte +0x0800
-    localparam [28:0] A_RXSLOT = BASE + 29'h500;    // byte +0x2800
-    localparam [63:0] MAGIC    = 64'h53554E3245544831;
+    localparam [28:0] A_TXWPTR = BASE + 29'h002;
+    localparam [28:0] A_TXRPTR = BASE + 29'h003;
+    localparam [28:0] A_RXWPTR = BASE + 29'h004;
+    localparam [28:0] A_RXRPTR = BASE + 29'h005;
+    localparam [28:0] A_MAC    = BASE + 29'h006;
+    localparam [28:0] A_TXSLOT = BASE + 29'h200;    // byte +0x1000
+    localparam [28:0] A_RXSLOT = BASE + 29'hA00;    // byte +0x5000
+    localparam [63:0] MAGIC    = 64'h5332455448303031;
+    localparam [63:0] TX_RING  = 64'd8;
 
     localparam int    POLL     = CLK_HZ / 5000;     // look for a delivered frame every 200 us
+    localparam int    RETRY    = CLK_HZ / 100_000;  // the TX ring full: look again in 10 us
+    localparam int    TX_WAIT  = CLK_HZ / 100;      // and give up after 10 ms of it
     localparam int    RX_GAP   = 48;                // nibbles after a received frame: twice 96 bit times
     localparam [10:0] MIN_DATA = 11'd60;            // the shortest frame, FCS not counted
     localparam [10:0] MAX_DATA = 11'd1518;          // the longest, with a VLAN tag
+    localparam [10:0] RX_MIN   = MIN_DATA + 11'd4;  // what Main delivers: the FCS counted
+    localparam [10:0] RX_MAX   = MAX_DATA + 11'd4;
 
     assign DDRAM_BURSTCNT = 8'd1;
     assign DDRAM_BE       = 8'hFF;
 
     // ---- the crossings ---------------------------------------------------------------
-    // Into the mailbox side: the OSD's switch, LOOPB-, the MAC, and the MII
-    // side's two handshake signals.
+    // Into the mailbox side: the machine's reset, the OSD's switch, LOOPB-, the
+    // MAC, and the MII side's two handshake signals.
     (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
-    reg [1:0]  en_s = 2'b00, cable_s = 2'b00, txreq_s = 2'b00, rxack_s = 2'b00;
+    reg [1:0]  mrst_s = 2'b11, en_s = 2'b00, cable_s = 2'b00, txreq_s = 2'b00, rxack_s = 2'b00;
     (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
     reg [47:0] mac_s1 = '0;
     reg [47:0] mac_s2 = '0, mac_q = '0;
     reg        tx_req_m = 1'b0, rx_ack_m = 1'b0;        // the MII side's, below
     always @(posedge clk) begin
+        mrst_s  <= {mrst_s[0], restart};
         en_s    <= {en_s[0], enable};
         cable_s <= {cable_s[0], loopback_n};
         txreq_s <= {txreq_s[0], tx_req_m};
@@ -130,6 +150,7 @@ module sun2_mister_enet #(
         mac_s2  <= mac_s1;
         if (mac_s2 == mac_s1) mac_q <= mac_s2;
     end
+    wire run    = !mrst_s[1];
     wire on     = en_s[1];
     wire cable  = cable_s[1];
     wire tx_req = txreq_s[1];
@@ -218,10 +239,10 @@ module sun2_mister_enet #(
     end
 
     // ---- receive: a frame buffer onto the MII ------------------------------------
-    localparam [2:0] R_IDLE = 3'd0, R_PRE = 3'd1, R_DATA = 3'd2, R_FCS = 3'd3, R_GAP = 3'd4;
+    // The frame is played as Main delivered it, padding and FCS included.
+    localparam [2:0] R_IDLE = 3'd0, R_PRE = 3'd1, R_DATA = 3'd2, R_GAP = 3'd3;
     reg [2:0]  rst_st = R_IDLE;
     reg [10:0] rx_len = '0;             // set by the mailbox side; steady while rx_req
-    reg [10:0] rx_send = '0;            // bytes to send: rx_len, padded to MIN_DATA
     reg [10:0] ri = '0;                 // byte being sent
     reg        rhalf = 1'b0;
     reg [4:0]  rcnt = '0;
@@ -239,15 +260,6 @@ module sun2_mister_enet #(
     always @(posedge mii_clk)
         rxbuf_q <= rxbuf[rxbuf_raddr];
 
-    // The nibble going out, and the FCS taking it in on the same edge, so the
-    // FCS is complete by the first clock it is sent in.
-    wire [7:0]  rbyte = (ri < rx_len) ? rxbuf_q : 8'h00;  // padding is zeroes
-    wire [3:0]  rnib  = rhalf ? rhold[7:4] : rbyte[3:0];
-    wire [31:0] fcs;
-    crc32_eth #(.DATA_W(4)) crc (
-        .clk(mii_clk), .rst(mii_rst), .init(rst_st == R_PRE), .en(rst_st == R_DATA), .data_i(rnib),
-        .crc_o(), .fcs_o(fcs), .crc_ok_o());
-
     always @(posedge mii_clk) begin
         if (mii_rst) begin
             rst_st    <= R_IDLE;
@@ -262,7 +274,6 @@ module sun2_mister_enet #(
                     if (rx_req_m && !rx_ack_m && tst == T_IDLE && !mii_tx_en) begin
                         rst_st      <= R_PRE;
                         rcnt        <= 5'd15;
-                        rx_send     <= (rx_len < MIN_DATA) ? MIN_DATA : rx_len;
                         rxbuf_raddr <= '0;      // byte 0 is ready by the end of the preamble
                     end
                 end
@@ -276,27 +287,19 @@ module sun2_mister_enet #(
                         rhalf  <= 1'b0;
                     end
                 end
-                R_DATA: begin
+                R_DATA: begin                   // low nibble first
                     rhalf   <= ~rhalf;
-                    mii_rxd <= rnib;
+                    mii_rxd <= rhalf ? rhold[7:4] : rxbuf_q[3:0];
                     if (!rhalf) begin
-                        rhold       <= rbyte;
+                        rhold       <= rxbuf_q;
                         rxbuf_raddr <= ri + 1'd1;
                     end else begin
                         ri <= ri + 1'd1;
-                        if (ri + 1'd1 == rx_send) begin
-                            rst_st <= R_FCS;
-                            rcnt   <= '0;
+                        if (ri + 1'd1 == rx_len) begin
+                            rst_st   <= R_GAP;
+                            rgap     <= RX_GAP;
+                            rx_ack_m <= 1'b1;   // the buffer is free again
                         end
-                    end
-                end
-                R_FCS: begin                    // low byte first, low nibble first
-                    mii_rxd <= fcs[rcnt[2:0]*4 +: 4];
-                    rcnt    <= rcnt + 1'd1;
-                    if (rcnt == 5'd7) begin
-                        rst_st   <= R_GAP;
-                        rgap     <= RX_GAP;
-                        rx_ack_m <= 1'b1;       // the buffer is free again
                     end
                 end
                 R_GAP: begin
@@ -313,19 +316,20 @@ module sun2_mister_enet #(
     always @(posedge mii_clk)
         mii_crs <= !mii_rst && (mii_tx_en || tst == T_PRE || tst == T_DATA ||
                                 (cable_mm && (tst == T_HELD || tst == T_DONE ||
-                                              rst_st == R_PRE || rst_st == R_DATA || rst_st == R_FCS)));
+                                              rst_st == R_PRE || rst_st == R_DATA)));
 
     // ---- the mailbox ---------------------------------------------------------------
-    localparam [4:0] E_OFF      = 5'd0,
-                     E_CLR      = 5'd1,  E_CLR_TX  = 5'd2,  E_CLR_RXW = 5'd3,
-                     E_CLR_RXR  = 5'd4,  E_PUB_MAC = 5'd5,  E_PUB    = 5'd6,
-                     E_IDLE     = 5'd7,
-                     E_TX_ADDR  = 5'd8,  E_TX_BYTE = 5'd9,  E_TX_HDR  = 5'd10, E_TX_PTR = 5'd11,
-                     E_RX_WPTR  = 5'd12, E_RX_HDR  = 5'd13, E_RX_WORD = 5'd14, E_RX_UNPACK = 5'd15,
-                     E_RX_PTR   = 5'd16, E_MAC     = 5'd17, E_UNPUB   = 5'd18,
-                     E_MEM      = 5'd19, E_MEM_RD  = 5'd20;
+    localparam [4:0] E_OFF      = 5'd0,  E_CLR     = 5'd1,  E_PUB     = 5'd2,  E_UNPUB   = 5'd3,
+                     E_IDLE     = 5'd4,
+                     E_TX_RPTR  = 5'd5,  E_TX_ADDR = 5'd6,  E_TX_BYTE = 5'd7,  E_TX_HDR  = 5'd8,
+                     E_TX_PTR   = 5'd9,
+                     E_RX_WPTR  = 5'd10, E_RX_HDR  = 5'd11, E_RX_WORD = 5'd12, E_RX_UNPACK = 5'd13,
+                     E_RX_PTR   = 5'd14, E_MAC     = 5'd15,
+                     E_MEM      = 5'd16, E_MEM_RD  = 5'd17;
 
     reg [4:0]  est = E_OFF, eret = E_OFF;
+    reg [2:0]  pstep = '0;              // the word being written as the mailbox is published
+    reg [31:0] gen = '0;                // runs from power-up, so no two publishes see the same
     reg [63:0] tx_wptr = '0, rx_wptr = '0, rx_rptr = '0;
     reg [63:0] rdata = '0;
     reg [63:0] pack = '0;
@@ -333,12 +337,15 @@ module sun2_mister_enet #(
     reg [10:0] elen = '0;
     reg [47:0] mac_pub = '0;
     reg        rx_keep = 1'b0;          // this delivered frame goes to the wire; else it is dropped
-    reg [$clog2(POLL) - 1:0] poll = '0;
+    reg [$clog2(POLL) - 1:0]    poll = '0;
+    reg [$clog2(RETRY + 1) - 1:0]   retry = '0;
+    reg [$clog2(TX_WAIT + 1) - 1:0] twait = '0;     // how long the frame offered has waited
 
-    wire [28:0] tx_slot = A_TXSLOT + {tx_wptr[1:0], 8'h00};
-    wire [28:0] rx_slot = A_RXSLOT + {rx_rptr[3:0], 8'h00};
+    wire [28:0] tx_slot  = A_TXSLOT + {tx_wptr[2:0], 8'h00};
+    wire [28:0] rx_slot  = A_RXSLOT + {rx_rptr[3:0], 8'h00};
     wire        tx_ready = tx_req && !tx_ack;           // a frame is offered and not yet taken
     wire        rx_free  = !rx_req && !rx_ack;          // the MII side has nothing of ours
+    wire        rx_good  = on && cable && rdata[10:0] >= RX_MIN && rdata[10:0] <= RX_MAX;
 
     task automatic mem(input bit we, input [28:0] a, input [63:0] d, input [4:0] next);
         begin
@@ -353,7 +360,11 @@ module sun2_mister_enet #(
 
     always @(posedge clk) begin
         rxbuf_we <= 1'b0;
+        gen  <= gen + 1'd1;
         poll <= (poll == POLL - 1) ? '0 : poll + 1'd1;
+        if (retry != 0) retry <= retry - 1'd1;
+        if (!tx_ready) twait <= '0;
+        else if (twait != TX_WAIT) twait <= twait + 1'd1;
         if (!tx_req) tx_ack <= 1'b0;    // the MII side has seen it: back to zero
         if (rx_ack)  rx_req <= 1'b0;    // the frame has been played in
 
@@ -367,35 +378,55 @@ module sun2_mister_enet #(
             E_OFF:
                 // A disconnected wire: anything transmitted is gone.
                 if (tx_ready) tx_ack <= 1'b1;
-                else if (on) est <= E_CLR;
+                else if (run) begin
+                    pstep   <= '0;
+                    tx_wptr <= '0;
+                    rx_wptr <= '0;
+                    rx_rptr <= '0;
+                    est     <= E_CLR;
+                end
 
-            // The previous generation is withdrawn before the pointers move,
-            // and the magic is the last thing written.
-            E_CLR:     mem(1, A_MAGIC,  64'd0, E_CLR_TX);
-            E_CLR_TX:  begin tx_wptr <= '0; mem(1, A_TXWPTR, 64'd0, E_CLR_RXW); end
-            E_CLR_RXW: begin rx_wptr <= '0; mem(1, A_RXWPTR, 64'd0, E_CLR_RXR); end
-            E_CLR_RXR: begin rx_rptr <= '0; mem(1, A_RXRPTR, 64'd0, E_PUB_MAC); end
-            E_PUB_MAC: begin mac_pub <= mac_q; mem(1, A_MAC, {1'b1, 15'd0, mac_q}, E_PUB); end
-            E_PUB:     mem(1, A_MAGIC, MAGIC, E_IDLE);
-            E_UNPUB:   mem(1, A_MAGIC, 64'd0, E_OFF);
+            // Publish: the magic cleared, GEN, the four pointers, the MAC, and
+            // the magic last.
+            E_CLR: begin
+                pstep <= pstep + 1'd1;
+                if (pstep == 3'd6) mac_pub <= mac_q;
+                mem(1, BASE + pstep,
+                    (pstep == 3'd1) ? {32'd0, gen} : (pstep == 3'd6) ? {1'b1, 15'd0, mac_q} : 64'd0,
+                    (pstep == 3'd6) ? E_PUB : E_CLR);
+            end
+            E_PUB:   mem(1, A_MAGIC, MAGIC, E_IDLE);
+            E_UNPUB: mem(1, A_MAGIC, 64'd0, E_OFF);
 
             E_IDLE:
-                if (!on)
+                if (!run)
                     est <= E_UNPUB;
-                else if (tx_ready) begin
-                    ei          <= '0;
-                    elen        <= tx_len;      // steady: the MII side holds it while it asks
-                    pack        <= '0;
-                    txbuf_raddr <= '0;
-                    est         <= E_TX_ADDR;
-                end else if (mac_q != mac_pub)
+                else if (tx_ready && !on)
+                    tx_ack <= 1'b1;             // Network Off: into nothing
+                else if (tx_ready && retry == 0)
+                    mem(0, A_TXRPTR, 64'd0, E_TX_RPTR);
+                else if (mac_q != mac_pub)
                     est <= E_MAC;
                 else if (rx_rptr != rx_wptr && rx_free)
                     mem(0, rx_slot, 64'd0, E_RX_HDR);
                 else if (poll == 0)
                     mem(0, A_RXWPTR, 64'd0, E_RX_WPTR);
 
-            // transmit: eight bytes into a word, a word into the slot
+            // transmit: room in the ring, eight bytes into a word, a word into the slot
+            E_TX_RPTR:
+                if (tx_wptr - rdata < TX_RING) begin
+                    ei          <= '0;
+                    elen        <= tx_len;      // steady: the MII side holds it while it asks
+                    pack        <= '0;
+                    txbuf_raddr <= '0;
+                    est         <= E_TX_ADDR;
+                end else if (twait == TX_WAIT) begin
+                    tx_ack <= 1'b1;             // nobody is taking frames: dropped
+                    est    <= E_IDLE;
+                end else begin
+                    retry <= RETRY;             // full: the 82586 defers on CRS meanwhile
+                    est   <= E_IDLE;
+                end
             E_TX_ADDR:
                 est <= E_TX_BYTE;               // the buffer's read latency
             E_TX_BYTE: begin
@@ -424,11 +455,11 @@ module sun2_mister_enet #(
             E_RX_HDR: begin
                 elen    <= rdata[10:0];
                 ei      <= '0;
-                rx_keep <= cable;
-                if (rdata[10:0] < 11'd14 || rdata[10:0] > MAX_DATA || rdata[63:11] != 0 || !cable)
-                    est <= E_RX_PTR;            // nonsense, or nowhere to put it: drop it
-                else
+                rx_keep <= rx_good;
+                if (rx_good)
                     mem(0, rx_slot + 29'd1, 64'd0, E_RX_UNPACK);
+                else
+                    est <= E_RX_PTR;            // nonsense, or nowhere to put it: drop it
             end
             E_RX_WORD:
                 mem(0, rx_slot + 29'd1 + ei[10:3], 64'd0, E_RX_UNPACK);
@@ -437,14 +468,14 @@ module sun2_mister_enet #(
                 rxbuf_waddr <= ei;
                 rxbuf_wdata <= rdata[ei[2:0]*8 +: 8];
                 ei          <= ei + 1'd1;
-                if (ei + 1'd1 == elen) begin
+                if (ei + 1'd1 == elen)
                     est <= E_RX_PTR;
-                end else if (ei[2:0] == 3'd7)
+                else if (ei[2:0] == 3'd7)
                     est <= E_RX_WORD;
             end
             E_RX_PTR: begin
                 rx_rptr <= rx_rptr + 1'd1;
-                if (rx_keep && elen >= 11'd14 && elen <= MAX_DATA) begin
+                if (rx_keep) begin
                     rx_len <= elen;             // before the request, and steady under it
                     rx_req <= 1'b1;
                 end
