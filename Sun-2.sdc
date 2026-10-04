@@ -10,9 +10,13 @@ derive_clock_uncertainty
 #   cpu_clk <-> clk_mem   sun2_cached_fifo_bridge's two async FIFOs; the disk
 #                         bridge's toggles and staging RAMs; ps2_key/ps2_mouse
 #                         toggles; the boot PROM's write port (the machine is
-#                         held in reset while it is written)
+#                         held in reset while it is written) and the ID
+#                         PROM's (written before the PROM first reads it)
 #   clk_mem <-> clk_pix   fb_scanout's toggles and line buffer
 #   clk_mii               the 82586's MII side, asynchronous by design
+#   clk_mii <-> clk_mem   sun2_mister_enet's two frame buffers (dual-clock
+#                         RAMs) and their request/acknowledge flags, through
+#                         two flops each way
 #   clk_ser               the SCCs, Am9513 and MM58167, sampled into cpu_clk
 #                         through two flops (ttl_am9513.v, mm58167.v)
 #

@@ -3,6 +3,8 @@
 //
 //   +rom=<file>     downloads it at start-up on ioctl index 0, as Main_MiSTer
 //                   sends games/Sun-2/boot0.rom
+//   +idprom=<file>  downloads it first, on ioctl index 64, as Main_MiSTer's
+//                   Sun-2 support sends an ID PROM image (or boot1.rom)
 //   +disk=<file>    mounts it as VD 0 and serves sd_rd / sd_wr with the
 //                   sequencing of sys/hps_io.sv (sd_ack up with the address
 //                   at 0; a byte per sd_buff_wr, the address stepping two
@@ -68,16 +70,13 @@ module hps_io #(
     longint img_bytes [VDNUM];
     initial for (int d = 0; d < VDNUM; d++) begin img_fd[d] = 0; img_bytes[d] = 0; end
 
-    initial begin
-        logic [127:0] st;
-        if ($value$plusargs("status=%h", st)) status = st;
-        repeat (200) @(posedge clk_sys);
-
-        if ($value$plusargs("rom=%s", rom_file)) begin
-            fd = $fopen(rom_file, "rb");
-            if (fd == 0) begin $display("hps_io: cannot open +rom=%s", rom_file); $finish; end
+    // One download, as Main_MiSTer's user_io_file_tx makes it.
+    task automatic send_file(input string name, input [15:0] index);
+        begin
+            fd = $fopen(name, "rb");
+            if (fd == 0) begin $display("hps_io: cannot open %s", name); $finish; end
             @(posedge clk_sys);
-            ioctl_index    <= 16'd0;
+            ioctl_index    <= index;
             ioctl_download <= 1'b1;
             n = 0;
             c = $fgetc(fd);
@@ -94,8 +93,22 @@ module hps_io #(
             $fclose(fd);
             repeat (4) @(posedge clk_sys);
             ioctl_download <= 1'b0;
-            $display("[%0t] hps_io: sent %0d bytes of %s as boot0.rom", $time, n, rom_file);
-        end else
+            $display("[%0t] hps_io: sent %0d bytes of %s on index %0d", $time, n, name, index);
+        end
+    endtask
+
+    initial begin
+        logic [127:0] st;
+        if ($value$plusargs("status=%h", st)) status = st;
+        repeat (200) @(posedge clk_sys);
+
+        if ($value$plusargs("idprom=%s", rom_file)) begin
+            send_file(rom_file, 16'd64);
+            repeat (20) @(posedge clk_sys);
+        end
+        if ($value$plusargs("rom=%s", rom_file))
+            send_file(rom_file, 16'd0);
+        else
             $display("hps_io: no +rom -- the machine will stay in reset");
 
         for (int d = 0; d < VDNUM; d++) begin

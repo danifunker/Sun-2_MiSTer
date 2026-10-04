@@ -20,8 +20,9 @@ upgrades it.** On a MiSTer the core boots the PROM, installs SunOS 4.0 from the
 release tapes onto a disk image (both volumes, every package), boots that disk
 multi-user to a login and `suntools`, and takes the 4.0.3 upgrade tapes over it
 to a 4.0.3 login -- on disks up to the Sun-2's 1 GiB limit, with the mouse
-and the clock taken from the MiSTer. Not there yet: networking, sound (the
-keyboard bell) and colour (the cgtwo).
+and the clock taken from the MiSTer, the keyboard's bell on its audio, and
+Ethernet onto the MiSTer's network (with a Main_MiSTer that has Sun-2 support;
+see below). Not there yet: colour (the cgtwo).
 
 What a user needs:
 
@@ -237,6 +238,67 @@ the disks, and `c` there resumes where the machine left off.
 Right Alt sends nothing itself. An F-key keeps the meaning it went down with,
 so releasing Right Alt first cannot leave an L-key held. Scroll Lock and F12
 are MiSTer's own (keyboard emulation and the OSD) and are not passed on.
+
+### The bell
+
+A Sun keyboard has a beeper, and it comes out of MiSTer's audio, HDMI and
+analogue alike (`rtl/sun2_mister_bell.sv`). It sounds for two things, as on
+the real keyboard:
+
+* **the bell**, for as long as the machine rings it: once at power-up, when
+  the PROM finds the keyboard; for `^G` on the console; and from SunView,
+  which flashes the window as well;
+* **the key click**, 5 ms on every key going down, once `click -y` has turned
+  it on. `click -n` turns it off again, and every reset does too.
+
+It is the keyboard's own pitch -- a 480 us period, about 2083 Hz -- as a square
+wave with its edges rounded off a little. **Keyboard bell** in the OSD sets the
+level: Normal, Loud, Quiet or Off.
+
+### The network, and the machine's identity
+
+A Sun-2 takes its Ethernet address and its serial number -- and from those,
+SunOS's `hostid` -- from a 32-byte ID PROM on the CPU board. The core's
+built-in one says `Serial #3442, Ethernet address 8:0:20:1:6:E0`, which is
+fine for one machine and wrong for two on the same network. Two ways to give a
+machine its own:
+
+* **`games/Sun-2/boot1.rom`**, a 32-byte ID PROM image, replaces the built-in
+  one at start-up: format 1, machine type 2, the six bytes of the Ethernet
+  address, four of date, three of serial number, a checksum that makes the XOR
+  of the first sixteen bytes zero, and sixteen bytes of `0xFF`. A dump of a
+  real 2/50 or 2/160's PROM works as it is.
+* **Main_MiSTer with Sun-2 support** (below) makes one by itself when there is
+  no `boot1.rom`: Sun's prefix `08:00:20` and the last three bytes of the
+  MiSTer's own Ethernet address, which are the serial number as well.
+
+**The network** is the CPU board's own Intel 82586, whole in the FPGA. The core
+plays the transceiver behind it and passes its frames through DDR3 to
+Main_MiSTer, which puts them on a host interface -- the same arrangement the
+NeXT and Minimig A2065 cores use. **It needs a Main_MiSTer with Sun-2 support**
+(`support/sun2/`); without it the 82586 is on a cable to nowhere, and SunOS
+attaches `ie0` all the same. *Network* in the OSD picks the host side:
+
+| Network | what it is |
+|---|---|
+| Off | no cable |
+| eth0 | MiSTer's own Ethernet port, shared: the Sun is a second machine on the LAN, with its own address |
+| eth1 | a second port (a USB adapter), the Sun's alone |
+| macvlan | a virtual port on eth0 with the Sun's address |
+| tap0 | a tap interface on the MiSTer, for routing it yourself |
+
+With *eth0* the Sun can reach and be reached by every machine on the LAN except
+the MiSTer it runs on. It runs at 10 Mb/s, the 82586's own speed. SunOS 4.0 has
+no DHCP, and a disk installed standalone names the machine `127.0.0.1` in
+`/etc/hosts`, so `ie0` comes up on the loopback address. To try it by hand:
+
+    ifconfig ie0 192.168.1.50 netmask 255.255.255.0 broadcast 192.168.1.255 up
+    /usr/etc/ping 192.168.1.1
+
+and to keep it, give the machine its address in `/etc/hosts` (the line with its
+name) and add a default route to `/etc/rc.local`: `route add default
+192.168.1.1 1`. On the board a Sun-2 on *eth0* answered ping from the LAN
+(full-size frames too), pinged out, and its FTP and telnet servers answered.
 
 Building: open `Sun-2.qpf` in Quartus Prime Lite 17.0 (the version MiSTer's
 framework supports) and compile. Nothing else is needed: no submodules, no

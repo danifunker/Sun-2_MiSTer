@@ -47,6 +47,14 @@ module sun2_fpga(input         cpu_clk,
 		 input [13:0]  rom_wr_addr,
 		 input [15:0]  rom_wr_data,
 `endif
+`ifdef SUN2_IDPROM_LOAD
+		 /* the ID PROM's write port, when its contents come from
+		  outside -- see idprom.v */
+		 input 	       idp_wr_clk,
+		 input 	       idp_wr_en,
+		 input [4:0]   idp_wr_addr,
+		 input [7:0]   idp_wr_data,
+`endif
 		 /* DVMA and on-board Ethernet.  The controller and its bus
 		  master live in top_fpga, because that is where the CPU bus is
 		  muxed; what belongs here is the control register in device
@@ -811,11 +819,15 @@ module sun2_fpga(input         cpu_clk,
 			  .W(PROTERR_raw_n),
 			  .S(1'b0));
 
-   // IDPROM, read-only
+   // IDPROM, read-only to the machine
    wire [7:0] 			 idprom_out;
    idprom idprom(.CLK(CLK),
 		 .idx(P_A[15:11]), // one byte per page...
 		 .dout(idprom_out)
+`ifdef SUN2_IDPROM_LOAD
+		 , .wr_clk(idp_wr_clk), .wr_en(idp_wr_en),
+		 .wr_addr(idp_wr_addr), .wr_data(idp_wr_data)
+`endif
 		 );
 
    // Diagnostic register, write-only

@@ -11,7 +11,11 @@
 //                         into a PNG)
 //    console.log          anything on the serial port, 9600 8N1
 //    the log              the PROM's diagnostic LEDs as they change, every bus
-//                         error with its time, the LEDs, a heartbeat
+//                         error with its time, the LEDs, a heartbeat, and each
+//                         time the keyboard's beeper sounds: for how long, and
+//                         the loudest sample it put on AUDIO_L; and every
+//                         Ethernet frame the machine puts in the network's
+//                         DDR3 mailbox (with +status=200, Network eth0)
 //
 //  Plusargs (and hps_io_model.sv's): +timeout_ms=<ms> (default 3000),
 //  +heartbeat_ms=<ms> (default 100).
@@ -33,14 +37,14 @@ reg rst = 1'b1;
 assign RESET = rst;
 initial #500_000 rst = 1'b0;
 
+reg clk_audio = 1'b0;
+always #20345 clk_audio = ~clk_audio;           // 24.576 MHz
+assign CLK_AUDIO = clk_audio;
+
 assign HDMI_WIDTH       = 12'd1920;
 assign HDMI_HEIGHT      = 12'd1080;
-assign CLK_AUDIO        = 1'b0;
 assign SD_MISO          = 1'b1;
 assign SD_CD            = 1'b1;
-assign DDRAM_BUSY       = 1'b0;
-assign DDRAM_DOUT       = 64'd0;
-assign DDRAM_DOUT_READY = 1'b0;
 assign UART_CTS         = 1'b0;
 assign UART_RXD         = 1'b1;
 assign UART_DSR         = 1'b0;
@@ -55,6 +59,55 @@ sdram_model chip (
     .ba(SDRAM_BA), .a(SDRAM_A), .dqmh(SDRAM_DQMH), .dqml(SDRAM_DQML),
     .dq(SDRAM_DQ)
 );
+
+// ---- DDR3: the network's mailbox, and what is sent through it ------------------------
+// The 64 KiB window at 0x1FF00000, answering a read two clocks after it is
+// taken.  Nothing plays the daemon: a frame transmitted is logged, with its
+// addresses and type, and nothing is ever delivered.
+localparam [28:0] DDR_BASE = 29'h03FE0000;
+reg  [63:0] ddr [0:8191];
+reg  [63:0] ddr_q = 64'd0;
+reg  [1:0]  ddr_rd_pipe = 2'b00;
+reg  [12:0] ddr_rd_addr = 13'd0;
+initial for (int i = 0; i < 8192; i++) ddr[i] = 64'd0;
+assign DDRAM_BUSY       = 1'b0;
+assign DDRAM_DOUT       = ddr_q;
+assign DDRAM_DOUT_READY = ddr_rd_pipe[1];
+always @(posedge DDRAM_CLK) begin
+    ddr_rd_pipe <= {ddr_rd_pipe[0], 1'b0};
+    if ((DDRAM_RD || DDRAM_WE) && (DDRAM_ADDR < DDR_BASE || DDRAM_ADDR >= DDR_BASE + 8192))
+        $display("[%0t] ddr: access outside the mailbox at %h", $time, DDRAM_ADDR);
+    else if (DDRAM_WE) ddr[DDRAM_ADDR - DDR_BASE] <= DDRAM_DIN;
+    else if (DDRAM_RD) begin
+        ddr_rd_addr    <= DDRAM_ADDR - DDR_BASE;
+        ddr_rd_pipe[0] <= 1'b1;
+    end
+    if (ddr_rd_pipe[0]) ddr_q <= ddr[ddr_rd_addr];
+end
+
+function automatic [7:0] tx_byte(input int slot, input int i);
+    int o = 'h800 + 'h800 * slot + 8 + i;
+    tx_byte = ddr[o / 8][(o % 8) * 8 +: 8];
+endfunction
+
+longint tx_seen = 0, magic_seen = 0;
+always @(posedge DDRAM_CLK) begin
+    if (ddr[0] != magic_seen) begin
+        magic_seen = ddr[0];
+        $display("[%0t] ether: mailbox magic %h, MAC %h", $time, ddr[0], ddr[4]);
+    end
+    if (ddr[1] != tx_seen && ddr[1] != 0) begin
+        int slot = int'(tx_seen % 4);
+        int n    = int'(ddr[('h800 + 'h800 * slot) / 8] & 64'h7FF);
+        string d = "";
+        for (int i = 0; i < 6; i++) d = {d, $sformatf("%s%02x", i ? ":" : "", tx_byte(slot, i))};
+        d = {d, " <- "};
+        for (int i = 6; i < 12; i++) d = {d, $sformatf("%s%02x", i > 6 ? ":" : "", tx_byte(slot, i))};
+        $display("[%0t] ether: frame %0d out, %0d bytes, %s, type %02x%02x", $time, tx_seen + 1, n, d,
+                 tx_byte(slot, 12), tx_byte(slot, 13));
+        tx_seen = tx_seen + 1;
+    end else if (ddr[1] == 0) tx_seen = 0;
+end
 
 // ---- the screen ----------------------------------------------------------------
 localparam int W = 1160, H = 904;
@@ -127,6 +180,22 @@ always @(negedge dut.machine.P_BERR_n) begin
     berrs = berrs + 1;
     $display("[%0t] bus error %0d", $time, berrs);
 end
+
+// The keyboard's beeper: the PROM blips the bell once it has found the keyboard.
+time beep_t0  = 0;
+int  beep_max = 0;
+bit  beeping  = 0;
+always @(dut.beeper)
+    if (dut.beeper === 1'b1) begin
+        beep_t0  = $time;
+        beep_max = 0;
+        beeping  = 1;
+    end else if (beeping) begin
+        $display("[%0t] bell: %0.2f ms, AUDIO_L peak %0d", $time, real'($time - beep_t0) / 1.0e9, beep_max);
+        beeping  = 0;
+    end
+always @(posedge CLK_AUDIO)
+    if ($signed(AUDIO_L) > beep_max) beep_max = $signed(AUDIO_L);
 
 always @(LED_USER) $display("[%0t] LED_USER = %0d (machine %s)", $time, LED_USER, LED_USER ? "in reset" : "running");
 

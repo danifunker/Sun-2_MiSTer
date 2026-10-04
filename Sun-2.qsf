@@ -65,7 +65,8 @@ set_global_assignment -name SEED 7
 #     colour jumper the PROM reads, and the on-board keyboard/mouse SCC
 #   cgtwo colour board, 1152x900x8, at VME 0x400000 -- NOT YET BUILT; it is
 #     next, framebuffer first and its raster-op units after
-#   on-board 82586 Ethernet, with no wire behind it until the HPS bridge
+#   on-board 82586 Ethernet, its wire a DDR3 mailbox to Main_MiSTer's Sun-2
+#     support (rtl/sun2_mister_enet.sv); the OSD's Network picks the host side
 #   RD68011 CPU core at 20 MHz (set by the PLL; nothing else depends on it)
 #   8 MiB of main memory in SDRAM, behind the cached FIFO bridge
 #
@@ -81,6 +82,8 @@ set_global_assignment -name VERILOG_MACRO "SUN2_CPU_RD68011=1"
 set_global_assignment -name VERILOG_MACRO "SUN2_QUARTUS=1"
 # The PROM comes from boot0.rom at start-up, not from the bitstream (bootrom.v).
 set_global_assignment -name VERILOG_MACRO "SUN2_BOOTROM_LOAD=1"
+# The ID PROM may be overwritten at start-up, from boot1.rom (idprom.v).
+set_global_assignment -name VERILOG_MACRO "SUN2_IDPROM_LOAD=1"
 
 # `include search path: sun2_config.vh and sun2_attr.vh.
 set_global_assignment -name SEARCH_PATH rtl/sun2-common
@@ -90,6 +93,17 @@ set_global_assignment -name SEARCH_PATH rtl/sun2-common
 # and has no per-register ASYNC_REG; sun2_attr.vh relies on the global one.
 set_global_assignment -name VERILOG_CONSTANT_LOOP_LIMIT 65536
 set_global_assignment -name SYNCHRONIZER_IDENTIFICATION "FORCED IF ASYNCHRONOUS"
+
+# Global clocks are scarce for the main PLL, which sits at the right edge of the
+# die: of the ones it can reach, the HPS's clocks and the HDMI ones take most,
+# leaving clk_mem, cpu_clk and clk_pix.  Anything else from it gets a regional
+# clock, a quarter of the die -- fine for clk_mii's few hundred registers, and
+# fatal for anything that has to reach the HPS (DDRAM_CLK) or that is as big as
+# the machine.  Forcing clk_mii onto a global once pushed cpu_clk onto a
+# regional clock instead, the whole machine into one quadrant, and the router
+# sat for hours at 117% congestion.  So DDRAM_CLK is clk_mem, and nothing new
+# should get its own clock from this PLL without checking "Global & Other Fast
+# Signals" in the fit report.
 
 source sys/sys.tcl
 source sys/sys_analog.tcl

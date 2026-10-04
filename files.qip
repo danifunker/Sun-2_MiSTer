@@ -97,6 +97,8 @@ set_global_assignment -name QIP_FILE rtl/pll_serial.qip
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_block.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_kbd_mouse.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_bell.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_enet.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_tod.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun2_mister_sdram.sv
 

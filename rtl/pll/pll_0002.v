@@ -16,7 +16,7 @@ module pll_0002 (
         .output_clock_frequency0("100.000000 MHz"), .phase_shift0("0 ps"), .duty_cycle0(50),
         .output_clock_frequency1("20.000000 MHz"),  .phase_shift1("0 ps"), .duty_cycle1(52),
         .output_clock_frequency2("83.333333 MHz"),  .phase_shift2("0 ps"), .duty_cycle2(50),
-        .output_clock_frequency3("25.000000 MHz"),  .phase_shift3("0 ps"), .duty_cycle3(50),
+        .output_clock_frequency3("2.500000 MHz"),  .phase_shift3("0 ps"), .duty_cycle3(50),
         .pll_type("General"),
         .pll_subtype("General")
     ) altera_pll_i (

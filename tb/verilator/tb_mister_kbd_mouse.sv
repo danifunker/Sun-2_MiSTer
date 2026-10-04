@@ -8,7 +8,9 @@
 //  dropped; extended keys; the Sun-2 codes the PROM's ktab.s2.c expects; a
 //  burst of events faster than the line delivers; Mouse Systems packets with
 //  buttons active low, Y up-positive and deltas clamped to -112..127, as
-//  sundev/ms.c reads them; the bell command; a line glitch is not a byte.
+//  sundev/ms.c reads them; a line glitch is not a byte.  The beeper: the bell
+//  for as long as it is on, a 5 ms click on each make once 0x0A enables it
+//  and none on a break or a dropped repeat, and RESET silencing both.
 //
 //      make -C tb/verilator tb_mister_kbd_mouse
 //============================================================================
@@ -17,6 +19,7 @@
 module tb_mister_kbd_mouse;
 
 localparam int BT = 16;                         // clocks per bit
+localparam int CLICK = BT * 1200 / 200;         // 5 ms
 
 reg clk = 0;
 always #5 clk = ~clk;
@@ -26,13 +29,21 @@ reg  [10:0] ps2_key = 0;
 reg  [24:0] ps2_mouse = 0;
 wire        kbd_tx, mouse_tx;
 reg         kbd_rx = 1;
-wire        bell;
+wire        beeper;
 
 sun2_mister_kbd_mouse #(.CLK_HZ(BT * 1200)) dut (
     .clk(clk), .rst(rst), .ps2_key(ps2_key), .ps2_mouse(ps2_mouse),
-    .kbd_ser_tx(kbd_tx), .kbd_ser_rx(kbd_rx), .mouse_ser_tx(mouse_tx), .bell(bell));
+    .kbd_ser_tx(kbd_tx), .kbd_ser_rx(kbd_rx), .mouse_ser_tx(mouse_tx), .beeper(beeper));
 
 integer passes = 0, fails = 0;
+
+// every time the beeper sounds, how long for
+int beep_len = 0;
+int beeps [$];
+always @(posedge clk) begin
+    if (beeper) beep_len <= beep_len + 1;
+    else if (beep_len != 0) begin beeps.push_back(beep_len); beep_len <= 0; end
+end
 task check(input bit ok, input string what);
     begin
         if (ok) passes++;
@@ -208,10 +219,47 @@ initial begin
         expect_k(e, "a burst of 20 events, faster than the line, all delivered in order");
     end
 
+    // ---- the beeper ----
+    check(beeps.size() == 0 && beep_len == 0,
+          $sformatf("no click before the host enables it: %0d beeps through every key above", beeps.size()));
+
     send_cmd(8'h02); repeat (BT * 4) @(posedge clk);
-    check(bell == 1'b1, "0x02 rings the bell");
+    check(beeper == 1'b1, "0x02 rings the bell");
+    repeat (CLICK * 4) @(posedge clk);
+    check(beeper == 1'b1, "... for as long as the host likes, not a click's length");
     send_cmd(8'h03); repeat (BT * 4) @(posedge clk);
-    check(bell == 1'b0, "0x03 stops it");
+    check(beeper == 1'b0 && beeps.size() == 1, "0x03 stops it");
+    beeps.delete();
+
+    send_cmd(8'h0A);
+    key(1, 0, 8'h1C); key(0, 0, 8'h1C); drain(4);
+    expect_k('{8'h4D, 8'hCD, 8'h7F}, "with the click on, the key still sends its codes");
+    check(beeps.size() == 1 && beeps[0] >= CLICK - 1 && beeps[0] <= CLICK + 1,
+          $sformatf("0x0A: one click of 5 ms (%0d clocks) for a press and release: %p", CLICK, beeps));
+    beeps.delete();
+
+    key(1, 0, 8'h1C); key(1, 0, 8'h1C); key(1, 0, 8'h1C); key(0, 0, 8'h1C);
+    key(1, 0, 8'h12); key(1, 0, 8'h1B); key(0, 0, 8'h1B); key(0, 0, 8'h12);
+    key(1, 1, 8'h11); key(0, 1, 8'h11);
+    drain(8);
+    kq.delete();
+    check(beeps.size() == 3,
+          $sformatf("a click per make: A with its repeats, Shift, S -- not Right Alt, which sends nothing (%0d)", beeps.size()));
+    beeps.delete();
+
+    send_cmd(8'h0B);
+    key(1, 0, 8'h1C); key(0, 0, 8'h1C); drain(4);
+    kq.delete();
+    check(beeps.size() == 0, "0x0B: no more clicks");
+
+    send_cmd(8'h0A); send_cmd(8'h02); repeat (BT * 4) @(posedge clk);
+    send_cmd(8'h01); drain(4);
+    expect_k('{8'hFF, 8'h03}, "RESET with the bell ringing answers as always");
+    check(beeper == 1'b0, "RESET silences the bell");
+    beeps.delete();
+    key(1, 0, 8'h1C); key(0, 0, 8'h1C); drain(4);
+    kq.delete();
+    check(beeps.size() == 0, "RESET turns the click off");
 
     // a glitch on the command line, shorter than half a bit
     @(negedge clk); kbd_rx = 0; repeat (BT / 4) @(posedge clk); kbd_rx = 1;

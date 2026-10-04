@@ -11,7 +11,7 @@ VFLAGS := --binary --timing -Wno-fatal -Wno-WIDTH -Wno-WIDTHEXPAND -Wno-WIDTHTRU
           -Wno-UNSIGNED -Wno-CMPCONST -Wno-DECLFILENAME -Wno-UNUSED -Wno-PINCONNECTEMPTY \
           +define+SIMULATION=1
 
-TESTS := tb_mister_sdram tb_mister_block tb_mister_kbd_mouse tb_kbm_scc tb_mister_tod tb_mt02 tb_scsi_odd tb_shifter_equiv
+TESTS := tb_mister_sdram tb_mister_block tb_mister_kbd_mouse tb_mister_bell tb_mister_enet tb_kbm_scc tb_mister_tod tb_mt02 tb_scsi_odd tb_shifter_equiv
 
 # The whole core is its own makefile; it is a run, not a quick test, so it is
 # not part of `all'.
@@ -33,6 +33,21 @@ tb_mister_block:
 tb_mister_kbd_mouse:
 	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ \
 	    $@.sv $(RTL)/sun2_mister_kbd_mouse.sv
+	./obj_$@/$@
+
+# The keyboard's beeper as sound, on the audio clock.
+tb_mister_bell:
+	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ \
+	    $@.sv $(RTL)/sun2_mister_bell.sv
+	./obj_$@/$@
+
+# The wire behind the 82586: its own MII transmitter and receiver against the
+# PHY side and a DDR3 mailbox.
+W82586 := $(RTL)/vendor/wish82586
+tb_mister_enet:
+	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ \
+	    $(W82586)/crc32_eth.sv $(W82586)/mii_tx.sv $(W82586)/mii_rx.sv \
+	    $(RTL)/sun2_mister_enet.sv $@.sv
 	./obj_$@/$@
 
 # The bridge into the keyboard/mouse Z8530 as sun2_fpga.v builds it, programmed

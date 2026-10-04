@@ -29,6 +29,16 @@
 // Not used, because MiSTer keeps them: Scroll Lock (keyboard-as-joystick
 // emulation), F12 (the OSD), F17..F20; and F13..F24 never reach a core.
 //
+// The beeper.  A Sun keyboard has one, sounded by two commands: the bell
+// (0x02 on, 0x03 off, for as long as the host likes) and the key click (0x0A
+// enables, 0x0B disables: 5 ms of tone on every make).  RESET (0x01) silences
+// both and turns the click off, as the keyboard's own reset does.  `beeper' is
+// the speaker's drive as a level; the tone itself -- a 480 us period, ~2083 Hz
+// -- is made where the sound is, in rtl/sun2_mister_bell.sv.  The PROM blips
+// the bell once when it finds the keyboard, and rings it for ^G on its console
+// (mon/kernel/sunmon.c, mon/dpy/fwritestr.c); SunView rings it from
+// win_bell(), through KIOCCMD on /dev/kbd.
+//
 // Mouse.  Mouse Systems five-byte packets, as sun/sys/sundev/ms.c reads them:
 // 0x80 | the three buttons active low (left 4, middle 2, right 1), then dx,
 // dy, and a second dx, dy.  Up is positive, as on PS/2 -- ms.c does
@@ -67,10 +77,11 @@ module sun2_mister_kbd_mouse #(
     input  wire        kbd_ser_rx,      // from the SCC's channel A transmit
     output wire        mouse_ser_tx,    // to the SCC's channel B receive
 
-    output reg         bell = 1'b0
+    output reg         beeper = 1'b0    // the keyboard's speaker is sounding: bell or click
 );
 
-    localparam int BIT_TICKS = CLK_HZ / 1200;     // 16666 at 20 MHz; 16 bits hold up to 78 MHz
+    localparam int BIT_TICKS   = CLK_HZ / 1200;   // 16666 at 20 MHz; 16 bits hold up to 78 MHz
+    localparam int CLICK_TICKS = CLK_HZ / 200;    // 5 ms
 
     // ---- 1200-baud transmitters behind 64-byte FIFOs, one writer each -------
     // hps_io keeps only the latest key event, so a burst -- several keys let go
@@ -275,9 +286,15 @@ module sun2_mister_kbd_mouse #(
     assign k_push  = kpush;
     assign k_pdata = kdata;
 
+    reg         bell     = 1'b0;        // 0x02 .. 0x03
+    reg         click_en = 1'b0;        // 0x0A .. 0x0B
+    reg [$clog2(CLICK_TICKS + 1) - 1:0] click_left = '0;
+
     always @(posedge clk) begin
         key_s <= {key_s[1:0], ps2_key[10]};
         kpush <= 1'b0;
+        beeper <= bell | (click_left != 0);
+        if (click_left != 0) click_left <= click_left - 1'd1;
 
         if (rst) begin
             down   <= 128'd0;
@@ -289,13 +306,20 @@ module sun2_mister_kbd_mouse #(
             ev_v   <= 1'b0;
             idle_v <= 1'b0;
             bell   <= 1'b0;
+            click_en   <= 1'b0;
+            click_left <= '0;
         end else begin
             // commands
             if (rx_valid) case (rx_byte)
-                8'h01: begin resp <= 2'd2; ev_v <= 1'b0; idle_v <= 1'b0; down <= 128'd0; end
+                8'h01: begin
+                    resp <= 2'd2; ev_v <= 1'b0; idle_v <= 1'b0; down <= 128'd0;
+                    bell <= 1'b0; click_en <= 1'b0; click_left <= '0;
+                end
                 8'h02: bell <= 1'b1;
                 8'h03: bell <= 1'b0;
-                default: ;                  // click on/off and the rest: nothing to do
+                8'h0A: click_en <= 1'b1;
+                8'h0B: begin click_en <= 1'b0; click_left <= '0; end
+                default: ;                  // the LED commands: no LEDs on a Type 3
             endcase
 
             // a key from the OSD's keyboard
@@ -324,6 +348,7 @@ module sun2_mister_kbd_mouse #(
                         if (!down[kc[6:0]]) begin  // auto-repeat makes are dropped
                             down[kc[6:0]] <= 1'b1;
                             ev_v <= 1'b1; ev_b <= kc;
+                            if (click_en) click_left <= CLICK_TICKS;
                         end
                     end else if (down[kc[6:0]]) begin
                         kafter = down;

@@ -11,13 +11,13 @@ module pll (
     output reg  outclk_0 = 1'b0,    // 100.000 MHz
     output reg  outclk_1 = 1'b0,    //  20.000 MHz, 52% high
     output reg  outclk_2 = 1'b0,    //  83.333 MHz
-    output reg  outclk_3 = 1'b0,    //  25.000 MHz
+    output reg  outclk_3 = 1'b0,    //   2.500 MHz
     output reg  locked   = 1'b0
 );
     always #5000 outclk_0 = ~outclk_0;
     always begin outclk_1 = 1'b1; #26000; outclk_1 = 1'b0; #24000; end
     always #6000 outclk_2 = ~outclk_2;
-    always #20000 outclk_3 = ~outclk_3;
+    always #200000 outclk_3 = ~outclk_3;
     initial #1_000_000 locked = 1'b1;   // 1 us
 endmodule
 

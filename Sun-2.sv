@@ -11,16 +11,20 @@
 //    clk_mem   100.000 MHz  SDRAM, the memory side of the Wishbone bridge, hps_io
 //    cpu_clk    20.000 MHz  the machine, its block seam and the keyboard/mouse bridge
 //    clk_pix    83.333 MHz  the raster
-//    clk_mii    25.000 MHz  the 82586's MII clocks; nothing is on the wire
+//    clk_mii     2.500 MHz  the 82586's MII clocks: 10 Mb/s Ethernet
 //    clk_ser     4.9152 MHz the SCCs, the Am9513 and the MM58167
+//    CLK_AUDIO  24.576 MHz  the framework's: the keyboard's beeper
 //
 //  Memory: 8 MiB of main memory and the 128 KiB frame buffer on the SDRAM
 //  board, behind rtl/sun2_mister_sdram.sv.  The boot PROM is not in the
 //  bitstream: it is games/Sun-2/boot0.rom, which Main_MiSTer sends on ioctl
 //  index 0 at start-up, and the machine stays in reset until it has arrived.
+//  DDR3 holds the network's mailbox (rtl/sun2_mister_enet.sv) and nothing else.
 //============================================================================
 
 `timescale 1ns / 1ps
+
+`include "sun2_config.vh"
 
 module emu
 (
@@ -32,7 +36,6 @@ module emu
     assign USER_OUT = '1;
     assign {UART_RTS, UART_DTR} = 2'b00;
     assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
-    assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
 
     assign VGA_SL      = 2'b00;
     assign VGA_F1      = 1'b0;
@@ -41,11 +44,6 @@ module emu
     assign HDMI_FREEZE    = 1'b0;
     assign HDMI_BLACKOUT  = 1'b0;
     assign HDMI_BOB_DEINT = 1'b0;
-
-    assign AUDIO_S   = 1'b0;
-    assign AUDIO_MIX = 2'b00;
-    assign AUDIO_L   = 16'd0;
-    assign AUDIO_R   = 16'd0;
 
     assign BUTTONS   = 2'b00;
     assign LED_POWER = 2'b00;
@@ -67,6 +65,9 @@ module emu
         "-;",
         "O[2:1],Aspect ratio,Original,Full Screen,4:3;",
         "O[6:5],Scale,V-Integer,Normal,Narrower HV-Integer,Wider HV-Integer;",
+        "-;",
+        "O[8:7],Keyboard bell,Normal,Loud,Quiet,Off;",
+        "O[11:9],Network,Off,eth0,eth1,macvlan,tap0;",
         "-;",
         "R0,Reset;",
         "V,v",`BUILD_DATE
@@ -192,6 +193,29 @@ module emu
         end
     end
 
+    // ---- the ID PROM, from boot1.rom ------------------------------------------------
+    // ioctl index 64, which Main_MiSTer sends games/Sun-2/boot1.rom on, is a
+    // 32-byte ID PROM image, written over the built-in one as it comes
+    // (rtl/sun2-common/idprom.v).  Main_MiSTer's Sun-2 support sends one made
+    // from the host's Ethernet address on the same index, before boot0.rom.
+    // Its Ethernet address, bytes 2..7, is kept here too, for the network's
+    // mailbox.
+    reg        idp_wr_en   = 1'b0;
+    reg  [4:0] idp_wr_addr = 5'd0;
+    reg  [7:0] idp_wr_data = 8'h0;
+    reg [47:0] idp_mac     = {`SUN2_IDPROM_ETH_HI, 8'd`SUN2_IDPROM_ETH5};
+
+    always @(posedge clk_mem) begin
+        idp_wr_en <= 1'b0;
+        if (ioctl_download && ioctl_index[7:0] == 8'd64 && ioctl_wr && ioctl_addr < 27'd32) begin
+            idp_wr_en   <= 1'b1;
+            idp_wr_addr <= ioctl_addr[4:0];
+            idp_wr_data <= ioctl_dout;
+            if (ioctl_addr >= 27'd2 && ioctl_addr <= 27'd7)
+                idp_mac[8 * (3'd7 - ioctl_addr[2:0]) +: 8] <= ioctl_dout;
+        end
+    end
+
     // ---- resets -----------------------------------------------------------------------
     // The machine: the OSD's reset, the framework's, an unlocked PLL, or no PROM yet.
     wire machine_reset_raw = status[0] | buttons[1] | RESET | ~locked | ~rom_loaded;
@@ -201,12 +225,13 @@ module emu
 
     // Memory and video restart only when the clocks do: a machine reset must
     // not lose the SDRAM's contents or blank the screen.
-    wire reset_mem, reset_pix;
+    wire reset_mem, reset_pix, reset_mii;
     reset_sync rst_mem (.clk(clk_mem), .rst_async_in(~locked), .rst_sync_out(reset_mem));
     reset_sync rst_pix (.clk(clk_pix), .rst_async_in(~locked), .rst_sync_out(reset_pix));
+    reset_sync rst_mii (.clk(clk_mii), .rst_async_in(~locked), .rst_sync_out(reset_mii));
 
     // ---- keyboard and mouse ---------------------------------------------------------
-    wire kbm_rxda, kbm_txda, kbm_rxdb;
+    wire kbm_rxda, kbm_txda, kbm_rxdb, beeper;
 
     sun2_mister_kbd_mouse #(.CLK_HZ(20_000_000)) kbd_mouse (
         .clk          (cpu_clk),
@@ -216,8 +241,24 @@ module emu
         .kbd_ser_tx   (kbm_rxda),
         .kbd_ser_rx   (kbm_txda),
         .mouse_ser_tx (kbm_rxdb),
-        .bell         ()
+        .beeper       (beeper)
     );
+
+    // The keyboard's bell and key click, as sound: a softened 2083 Hz square
+    // wave, made on the audio clock.  The OSD's "Keyboard bell" is its volume.
+    wire signed [15:0] bell_sample;
+
+    sun2_mister_bell bell (
+        .clk    (CLK_AUDIO),
+        .beeper (beeper),
+        .volume (status[8:7]),
+        .sample (bell_sample)
+    );
+
+    assign AUDIO_S   = 1'b1;
+    assign AUDIO_MIX = 2'b00;
+    assign AUDIO_L   = bell_sample;
+    assign AUDIO_R   = bell_sample;
 
     // ---- the time of day -------------------------------------------------------------
     // MiSTer's local time as it is when the core loads, less 36 years and in
@@ -358,6 +399,44 @@ module emu
         .SDRAM_CLK  (SDRAM_CLK)
     );
 
+    // ---- the network ----------------------------------------------------------------------
+    // The PHY behind the 82586: frames to and from Main_MiSTer's Sun-2 support
+    // through a mailbox in DDR3 (rtl/sun2_mister_enet.sv).  The OSD's Network
+    // picks the host side; Main reads it from the same status bits.
+    wire [3:0] mii_txd, mii_rxd;
+    wire       mii_tx_en, mii_rx_dv, mii_crs, eth_loopback_n;
+
+    // The mailbox side, and with it DDRAM_CLK, is on clk_mem: a global clock,
+    // which the HPS's port at the top of the die needs.  clk_mii is not one
+    // (see Sun-2.qsf), and only the MII side of the module runs on it.
+    assign DDRAM_CLK = clk_mem;
+
+    sun2_mister_enet #(.CLK_HZ(100_000_000)) enet (
+        .clk              (clk_mem),
+        .rst              (reset_mem),
+        .mii_clk          (clk_mii),
+        .mii_rst          (reset_mii),
+        .enable           (status[11:9] != 3'd0),
+        .loopback_n       (eth_loopback_n),
+        .mac              (idp_mac),
+
+        .mii_txd          (mii_txd),
+        .mii_tx_en        (mii_tx_en),
+        .mii_rxd          (mii_rxd),
+        .mii_rx_dv        (mii_rx_dv),
+        .mii_crs          (mii_crs),
+
+        .DDRAM_BUSY       (DDRAM_BUSY),
+        .DDRAM_BURSTCNT   (DDRAM_BURSTCNT),
+        .DDRAM_ADDR       (DDRAM_ADDR),
+        .DDRAM_DOUT       (DDRAM_DOUT),
+        .DDRAM_DOUT_READY (DDRAM_DOUT_READY),
+        .DDRAM_RD         (DDRAM_RD),
+        .DDRAM_DIN        (DDRAM_DIN),
+        .DDRAM_BE         (DDRAM_BE),
+        .DDRAM_WE         (DDRAM_WE)
+    );
+
     // ---- the machine ----------------------------------------------------------------------
     wire       fb_video_en;
     wire [7:0] diag_leds, todebug;
@@ -380,10 +459,16 @@ module emu
         .rom_wr_addr    (rom_wr_addr),
         .rom_wr_data    (rom_wr_data),
 
+        .idp_wr_clk     (clk_mem),
+        .idp_wr_en      (idp_wr_en),
+        .idp_wr_addr    (idp_wr_addr),
+        .idp_wr_data    (idp_wr_data),
+
         .diag_leds      (diag_leds),
         .en_boot        (),
         .todebug        (todebug),
         .eth_crs_stuck  (),
+        .eth_loopback_n (eth_loopback_n),
         .fb_video_en    (fb_video_en),
 
         // No PHY: status reads back as absent.
@@ -394,17 +479,16 @@ module emu
         .phy_fd         (1'b0),
         .phy_speed      (2'b00),
 
-        // MII clocks run, so the 82586 transmits into nothing and its
-        // driver sees a quiet wire, not a dead chip.
+        // The MII, to the network above.  No collisions on that wire.
         .mii_tx_clk     (clk_mii),
-        .mii_txd        (),
-        .mii_tx_en      (),
+        .mii_txd        (mii_txd),
+        .mii_tx_en      (mii_tx_en),
         .mii_tx_er      (),
         .mii_rx_clk     (clk_mii),
-        .mii_rxd        (4'd0),
-        .mii_rx_dv      (1'b0),
+        .mii_rxd        (mii_rxd),
+        .mii_rx_dv      (mii_rx_dv),
         .mii_rx_er      (1'b0),
-        .mii_crs        (1'b0),
+        .mii_crs        (mii_crs),
         .mii_col        (1'b0),
 
         .blk_start      (blk_start),

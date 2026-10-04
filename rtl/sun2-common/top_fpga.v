@@ -20,6 +20,13 @@ module top(input         cpu_clk,
 	   input [13:0]  rom_wr_addr,
 	   input [15:0]  rom_wr_data,
 `endif
+`ifdef SUN2_IDPROM_LOAD
+	   /* the ID PROM's write port -- see idprom.v */
+	   input 	 idp_wr_clk,
+	   input 	 idp_wr_en,
+	   input [4:0] 	 idp_wr_addr,
+	   input [7:0] 	 idp_wr_data,
+`endif
 
 	   /* debug */
 	   output [7:0]  diag_leds,
@@ -31,6 +38,10 @@ module top(input         cpu_clk,
 	    holds carrier sense asserted stops transmission dead, and it is the
 	    one failure the machine cannot otherwise report. */
 	   output 	 eth_crs_stuck,
+
+	   /* LOOPB- from the Ethernet control register: 0 is the transceiver in
+	    loopback, off the cable, for whatever stands in for the cable. */
+	   output 	 eth_loopback_n,
 
 	   /* The 2/50 frame buffer's display enable, for the board's scan-out */
 	   output 	 fb_video_en,
@@ -250,6 +261,7 @@ module top(input         cpu_clk,
    wire [15:0] dvma_dout;
    wire        ether_core_reset_n, ether_loopback_n, ether_ca, ether_int_en;
    wire        ether_int, ether_bus_err;
+   assign eth_loopback_n = ether_loopback_n;
 
    // The MultiBus system bus, and whatever is plugged into it.
    wire        mb_sel, mb_we, mb_uds_n, mb_lds_n, mb_hit, mb_ack;
@@ -313,6 +325,10 @@ module top(input         cpu_clk,
 `ifdef SUN2_BOOTROM_LOAD
 		  .rom_wr_clk(rom_wr_clk), .rom_wr_en(rom_wr_en),
 		  .rom_wr_addr(rom_wr_addr), .rom_wr_data(rom_wr_data),
+`endif
+`ifdef SUN2_IDPROM_LOAD
+		  .idp_wr_clk(idp_wr_clk), .idp_wr_en(idp_wr_en),
+		  .idp_wr_addr(idp_wr_addr), .idp_wr_data(idp_wr_data),
 `endif
 
 		  .EN_DVMA_o(EN_DVMA),
