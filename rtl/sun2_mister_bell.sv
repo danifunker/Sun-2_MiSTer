@@ -1,5 +1,6 @@
 //
 // sun2_mister_bell.sv
+// Licence: GPL-3.0-or-later, as the rest of this repository, or GPL-2.0-or-later.
 //
 // The Sun keyboard's beeper, as sound on MiSTer's audio path.
 //
