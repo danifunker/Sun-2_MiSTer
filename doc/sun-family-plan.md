@@ -103,3 +103,33 @@ branch.
    load the new Sun-2 core, ping both ways incl. 8000/16000-byte pings, FTP.
 7. Delete local `sun2-patches` after `sun-family` works; deleting the remote
    branch and pushing are the user's call.
+
+## Status (2026-10-04)
+
+**Done and tested on the board.**  Main_MiSTer `sun-family` is `635a7a5`, pushed to
+origin; the core is Sun-2_MiSTer `9b26106` on master.  Left to the user: step 7 of
+Main's half -- deleting `sun2-patches`, local (it holds an unpushed `6d067de`, a
+comment trim the new branch supersedes) and on origin -- and handing
+`doc/ss-align-plan.md` to the session working on `ss`, which works with this Main
+unchanged until it moves to `SSETH002`.
+
+* Core: `rtl/sun2_mister_enet.sv` on the protocol above.  Two things the plan did not
+  say and Main forced: the mailbox is published each time the **machine leaves
+  reset** (Main clears a stale magic when it starts, then sends boot0.rom, which holds
+  the machine in reset -- publishing at PLL lock, as before, would be cleared and never
+  redone), and withdrawn when it goes back in; and it **stays published with Network
+  Off**, because Main reads the mode only while it sees the magic and would otherwise
+  never close its host link.  The TX wait is 10 ms (`TX_WAIT`), retried every 10 us.
+* Tests: `tb_mister_enet` 48 checks, `mutate_enet.sh` 22 of 22 caught; all of
+  `make -C tb/verilator` passes; `tb_emu` publishes the mailbox 200 ns after
+  boot0.rom arrives.  Quartus 18 min: 77% ALMs (32,167), cpu_clk +1.84 ns
+  (still a GCLK), clk_mem +0.76, hold +0.19.
+* Main `sun-family`: `support/sun/` from `sparcstation-enhancements`, a core table in
+  `sun.cpp` (`is_sun_family()`, the status bits), RX depth from the magic,
+  `sun_idprom.cpp`.  The board runs fast-mac-scsi + that diff (as before, to keep the
+  Mac write buffer); `build/main_mister/` holds both binaries and the patch.
+* Board (`Sun-2_20261003h.rbf`, CFG zeroed): ID PROM from Main; pings 56 to 16000 bytes
+  from the LAN, 0% loss (8000 = 6 fragments, 16000 = 11); 256 KiB through telnetd each
+  way, sums equal; ftpd answers; `netstat -s`: 196 fragments in, 0 dropped, 0
+  retransmits, 0 bad checksums.  `ie0` showed 1 input error in 5,756 packets that a
+  further 440 fragments did not move -- unexplained, not load-related.
