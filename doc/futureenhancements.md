@@ -200,6 +200,42 @@ The scaler keeps HDMI at 60 Hz, so a 30 Hz raster would halve the scan-out's
 share.  It changes the analogue output and the retrace rate the software sees,
 and nothing above says it is needed.  Not recommended.
 
+## Booting: no fsck after a clean shutdown
+
+**A disk configuration, not a change to the core.**  The 1 GB 4.0.3 disk spends
+about three of the four and a half minutes from core load to `login:` in
+`fsck`.  SunOS 4.0.3 checks every file system in `/etc/fstab` that has a pass
+number, on every boot: it has no clean flag (that came with SunOS 4.1, which
+never ran on a Sun-2), so `fsck -p` cannot tell a cleanly unmounted volume from
+a crashed one.  Most of the time is `/usr`: 245,760 inodes for about 7,000
+files, which is 30 MB of inode blocks read in the first pass.
+
+**The way round it is already on the disk.**  `/etc/rc.boot` skips every check
+when `/fastboot` exists ("trust that everything is ok when /fastboot exists"),
+`/etc/rc` removes the file once the boot has got past that point, and
+`/usr/etc/fasthalt` and `/usr/etc/fastboot` are `halt` and `reboot` that create
+it first (`cp /dev/null /fastboot`).  So a disk shut down with `fasthalt` boots
+without `fsck`, and one stopped any other way -- the OSD's Reset, a core
+switch, a crash -- still gets the full check, which is what is wanted.
+
+What could be done with it, later:
+
+* **Say so in the README**, where it tells people to shut down before a reset:
+  `/usr/etc/fasthalt` instead of `/etc/halt`, and why.
+* **Make it the default on the disks this project prepares**: root's
+  `.bash_profile` and `.cshrc` aliasing `halt` and `reboot` to `fasthalt` and
+  `fastboot`.  Less invasive than replacing `/usr/etc/halt`, which `shutdown`
+  also runs.
+* **Make the check itself shorter** for the boots that still need it: a disk
+  made with fewer inodes (`newfs -i` with a larger number of bytes per inode)
+  has less for the first pass to read.  It has to be decided when the disk is
+  made, by `tools/mktape --disk` or `suninstall`, and should be measured.
+* **Not** a pass number of 0 for `/usr` in `/etc/fstab`: that skips the check
+  after a crash as well.
+
+One caveat: `/fastboot` survives until `/etc/rc` runs, so if the boot after a
+`fasthalt` is itself cut off before that, the next boot skips `fsck` too.
+
 ## How to measure again
 
 **In simulation**, `make -C tb/verilator tb_emu` prints a line of figures every

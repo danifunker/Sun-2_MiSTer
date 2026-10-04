@@ -1,0 +1,20 @@
+# Scripts keep LF line endings in every checkout.  They run under WSL and on
+# the MiSTer, where a CR at the end of a line breaks the #! line and every
+# command; a Windows checkout with core.autocrlf would otherwise give them CRLF.
+*.sh                text eol=lf
+*.py                text eol=lf
+tools/cachesim      text eol=lf
+tools/coreread      text eol=lf
+tools/fbshot        text eol=lf
+tools/mkbootaout    text eol=lf
+tools/mktape        text eol=lf
+tools/mkxydisk      text eol=lf
+tools/pcsym         text eol=lf
+tools/pgm2png       text eol=lf
+tools/promdis       text eol=lf
+tools/ufsread       text eol=lf
+
+# What goes on a MiSTer is bytes, whatever its name.
+releases/**         binary
+*.rbf               binary
+*.rom               binary
