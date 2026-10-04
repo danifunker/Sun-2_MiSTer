@@ -41,6 +41,8 @@ hc_output/
 *.qws
 *.sof
 *.rbf
+# ... except the released core
+!releases/*.rbf
 *.smsg
 *.jdi
 *.pin

@@ -15,7 +15,9 @@
 #     ~    a half-second pause
 #     {^X}    Control-X
 #     {NAME}  one key by name: {F12} {ESC} {UP} {DOWN} {LEFT} {RIGHT} {ENTER}
-#             {BS} {DEL} {TAB} {F1}..{F11}, and {PIPE} for a `|'
+#             {BS} {DEL} {TAB} {F1}..{F11}, and the characters the rest of
+#             this grammar takes: {PIPE} `|', {LBRACE} `{', {BANG} `!',
+#             {TILDE} `~'
 #
 # and, through a second virtual device -- a USB mouse, created only when the
 # text uses one of these:
@@ -25,8 +27,9 @@
 #     {ML} {MM} {MR}         click the left, middle or right button
 #     {ML+} {ML-} ...        press or release one, for a drag
 #
-# Letters, digits, space and . / - , = ; ' and their shifted forms are typed
-# as themselves.  Python 3 standard library only; MiSTer's Linux is 32-bit ARM.
+# Letters, digits, space and . / - , = ; ' [ ] \ ` and their shifted forms
+# (but for the four above) are typed as themselves, so C can be typed.
+# Python 3 standard library only; MiSTer's Linux is 32-bit ARM.
 #
 import fcntl
 import os
@@ -44,10 +47,12 @@ KEY = {c: n for n, c in enumerate("1234567890", 2)}
 KEY.update({c: n for c, n in zip("qwertyuiop", range(16, 26))})
 KEY.update({c: n for c, n in zip("asdfghjkl", range(30, 39))})
 KEY.update({c: n for c, n in zip("zxcvbnm", range(44, 51))})
-KEY.update({"-": 12, "=": 13, " ": 57, ";": 39, "'": 40, ",": 51, ".": 52, "/": 53})
+KEY.update({"-": 12, "=": 13, " ": 57, ";": 39, "'": 40, ",": 51, ".": 52, "/": 53,
+            "[": 26, "]": 27, "\\": 43, "`": 41})
 SHIFTED = {"!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7",
            "*": "8", "(": "9", ")": "0", "_": "-", "+": "=", ":": ";", '"': "'",
-           "<": ",", ">": ".", "?": "/"}
+           "<": ",", ">": ".", "?": "/", "{": "[", "}": "]", "~": "`"}
+LITERAL = {"LBRACE": "{", "BANG": "!", "TILDE": "~"}
 NAMED = {"ESC": 1, "BS": 14, "TAB": 15, "ENTER": 28, "DEL": 111, "UP": 103, "DOWN": 108,
          "LEFT": 105, "RIGHT": 106, "F11": 87, "F12": 88}
 NAMED.update({f"F{i}": 58 + i for i in range(1, 11)})
@@ -126,6 +131,8 @@ def main():
                     emit(b, 0, mfd)
             elif name.upper() == "PIPE":        # | is Return here, so it has a name
                 tap(43, shift=True)
+            elif name.upper() in LITERAL:       # likewise { ! ~
+                tap(KEY[SHIFTED[LITERAL[name.upper()]]], shift=True)
             elif name.startswith("^"):          # {^N}: Control-N
                 emit(LCTRL, 1)
                 tap(KEY[name[1:].lower()])

@@ -21,6 +21,11 @@
 //  Plusargs (and hps_io_model.sv's): +timeout_ms=<ms> (default 3000),
 //  +heartbeat_ms=<ms> (default 100).
 //
+//  emu_stats.svh adds what the SDRAM's time goes to and what that costs the
+//  CPU -- per interval (+stats_ms) and at the end -- and, optionally, kernel
+//  milestones (+pc_watch=FILE) and a trace of the CPU's memory addresses
+//  (+mem_trace=FILE).
+//
 //      make -C tb/verilator tb_emu
 //============================================================================
 `timescale 1ps/1ps
@@ -227,5 +232,7 @@ initial begin : finish
     $fclose(con_fd);
     $finish;
 end
+
+`include "emu_stats.svh"
 
 endmodule

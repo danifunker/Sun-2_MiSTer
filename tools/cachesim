@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+# tools/cachesim TRACE [IDX...] -- replay a tb_emu +mem_trace against read caches
+# like sun2_cached_fifo_bridge's: 16-byte lines, write-through, no allocation
+# on a write (a write that hits updates the line, which changes nothing here),
+# 2**IDX lines.  Direct-mapped, as the bridge is, and two-way LRU for comparison.
+#
+# The trace is 4 bytes a data phase, big-endian: bit 31 a write, bit 30
+# cacheable, bit 29 DVMA, bits 23..1 the physical address.
+import sys
+from array import array
+
+def load(path):
+    raw = open(path, "rb").read()
+    a = array("I")
+    a.frombytes(raw[: len(raw) // 4 * 4])
+    if sys.byteorder == "little":
+        a.byteswap()
+    return a
+
+def run(tr, idx, ways):
+    n = 1 << (idx if ways == 1 else idx - 1)  # the same capacity either way
+    mask = n - 1
+    hits = misses = 0
+    if ways == 1:
+        tags = [-1] * n
+        for w in tr:
+            if not (w & 0x40000000) or (w & 0x80000000):
+                continue                    # uncached, or a write: no allocation
+            line = (w & 0xFFFFFF) >> 4
+            i = line & mask
+            if tags[i] == line:
+                hits += 1
+            else:
+                misses += 1
+                tags[i] = line
+    else:
+        t0 = [-1] * n
+        t1 = [-1] * n                       # t0 the most recently used
+        for w in tr:
+            if not (w & 0x40000000):
+                continue
+            line = (w & 0xFFFFFF) >> 4
+            i = line & mask
+            if w & 0x80000000:              # a write hit refreshes nothing that matters
+                continue
+            if t0[i] == line:
+                hits += 1
+            elif t1[i] == line:
+                hits += 1
+                t1[i] = t0[i]
+                t0[i] = line
+            else:
+                misses += 1
+                t1[i] = t0[i]
+                t0[i] = line
+    return hits, misses
+
+def main():
+    tr = load(sys.argv[1])
+    idxs = [int(x) for x in sys.argv[2:]] or [9, 10, 11, 12, 13, 14]
+    nrd = sum(1 for w in tr if not (w & 0x80000000))
+    nrdc = sum(1 for w in tr if (w & 0x40000000) and not (w & 0x80000000))
+    ndv = sum(1 for w in tr if w & 0x20000000)
+    print(f"{len(tr)} data phases: {nrd} reads ({nrdc} cacheable), "
+          f"{len(tr) - nrd} writes, {ndv} by DVMA")
+    for idx in idxs:
+        for ways in (1, 2):
+            h, m = run(tr, idx, ways)
+            kib = (16 << idx) // 1024
+            print(f"  {kib:4d} KiB {'direct' if ways == 1 else '2-way '}  "
+                  f"hits {h:9d}  misses {m:8d}  miss rate {100.0 * m / max(1, h + m):6.3f}%")
+        sys.stdout.flush()
+
+main()

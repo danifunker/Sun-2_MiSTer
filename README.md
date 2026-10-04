@@ -28,6 +28,9 @@ see below), and **colour**: the Sun-2 colour board, which SunOS attaches as
 
 What a user needs:
 
+* **The core**, from [`releases/`](releases/): `Sun-2_20261004.rbf`, with
+  `boot0.rom` and `MiSTer`, a Main_MiSTer with Sun support, beside it.
+  [`releases/README.md`](releases/README.md) says where each one goes.
 * **A MiSTer with an SDRAM board** (32 MB or more). Main memory, the mono
   frame buffer and the colour board's megabyte live there.
 * **The boot PROM**, as `games/Sun-2/boot0.rom`: the 32 KiB Sun-2/50 / 2/160
@@ -143,7 +146,10 @@ or copy it over `/vmunix`. Then `suntools` runs on the colour screen, and
 `/usr/demo` has colour to show it, `spheresdemo` for one.
 
 How the board was worked out, with no manual to work from, and how it is
-built and tested, is in [`doc/cgtwo.md`](doc/cgtwo.md).
+built and tested, is in [`doc/cgtwo.md`](doc/cgtwo.md). What its picture costs
+the rest of the machine -- about 1% of the CPU, measured, and more of the
+board's own drawing -- and what could be made faster are in
+[`doc/futureenhancements.md`](doc/futureenhancements.md).
 
 ### Logging in, and SunView
 
@@ -310,7 +316,7 @@ plays the transceiver behind it and passes its frames through DDR3 to
 Main_MiSTer, which puts them on a host interface -- the same arrangement the
 NeXT and Minimig A2065 cores use, and the same mailbox and daemon as the
 SPARCstation core. **It needs a Main_MiSTer with Sun support**
-(`support/sun/`, Main_MiSTer branch `sun-family`); without it the 82586 is on
+(`support/sun/`, Main_MiSTer branch `sun-family`; `releases/MiSTer` is one); without it the 82586 is on
 a cable to nowhere, and SunOS attaches `ie0` all the same. *Network* in the OSD
 picks the host side, in the SPARCstation core's order:
 
@@ -346,6 +352,7 @@ generated sources.
 | `rtl/vendor/` | third-party cores, copied in unmodified; see its README |
 | `rtl/sun2_mister_*.sv`, `rtl/sdram.sv`, `rtl/pll*.v` | the MiSTer glue |
 | `sys/` | Template_MiSTer's framework, verbatim |
+| `releases/` | the core, the boot PROM and a Main_MiSTer with Sun support, ready to copy to a MiSTer |
 | `doc/prom/` | an annotated disassembly of the boot PROM |
 | `tb/verilator/` | unit tests for the MiSTer glue and the tape drive: `make -C tb/verilator` (Verilator 5); `make -C tb/verilator tb_emu` runs the whole core, `TAPE=`/`DISK=`/`KEYS=` to feed it |
 | `tools/mktape` | tape images (`.qic`) from a SunOS release, their `format.dat` taught the disks it makes, and an empty labelled disk to install onto |
