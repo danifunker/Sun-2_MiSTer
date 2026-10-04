@@ -89,7 +89,28 @@ tb_shifter_equiv:
 	    $(RTL)/patched/rd68011/rd68011_shifter.sv obj_$@/rd68011_shifter_ref.sv $@.sv
 	./obj_$@/$@
 
+# The colour board against the C model: a bus trace of SunOS 4.0's own
+# libpixrect (CG2_KERNEL=1: the kernel's cg2_rop and cgtwo driver) recorded by
+# tools/cg2model's harness, replayed into the RTL, every read and the whole
+# megabyte checked.  Needs the harness, and so the SunOS 4.0 tapes: see
+# tools/cg2model/Makefile.  Not part of `all' for that reason.
+CG2_N      ?= 400
+CG2_SEED   ?= 1
+CG2_KERNEL ?=
+CG2_DIR    := ../../build/cg2model
+CG2_IMG    := $(if $(CG2_KERNEL),kern40,lp40)
+tb_cgtwo:
+	$(MAKE) -C ../../tools/cg2model $(CG2_DIR:../../%=../../%)/harness \
+	    ../../build/cg2model/lp40.bin ../../build/cg2model/kern40.bin
+	mkdir -p obj_$@
+	$(CG2_DIR)/harness $(CG2_DIR)/$(CG2_IMG).bin $(CG2_DIR)/$(CG2_IMG).sym \
+	    $(if $(CG2_KERNEL),-k) -n $(CG2_N) -s $(CG2_SEED) \
+	    -t obj_$@/trace.txt -I obj_$@/init.bin -F obj_$@/final.bin
+	$(V) $(VFLAGS) --top-module $@ --Mdir obj_$@ -o $@ \
+	    $(RTL)/sun2-vme/sun2_cgtwo.sv $@.sv
+	./obj_$@/$@ +trace=obj_$@/trace.txt +init=obj_$@/init.bin +final=obj_$@/final.bin
+
 clean:
 	rm -rf obj_* run_*
 
-.PHONY: all clean $(TESTS)
+.PHONY: all clean $(TESTS) tb_cgtwo

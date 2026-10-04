@@ -41,11 +41,13 @@
 //
 // Four things about this are load-bearing:
 //
-//   * **The jumpers must read back zero.**  They are sense inputs on the real
-//     card (Engineering Manual 2.7.1, J1600) and the PROM reads them to decide
-//     what it is looking at.  A 1 in 1024_jumper makes it 1024x1024 instead of
-//     1152x900; a 1 in color_jumper makes finit() go looking for a CG2 colour
-//     board at VME 0x400000 and, not finding one, give up on the display
+//   * **The jumpers are sense inputs** on the real card (Engineering Manual
+//     2.7.1, J1600) and the PROM reads them to decide what it is looking at.
+//     A 1 in 1024_jumper makes it 1024x1024 instead of 1152x900, so that one
+//     reads zero.  color_jumper is the machine's choice of console: 1 makes
+//     finit() look for the CG2 colour board at VME 0x400000 and draw its
+//     console there (doc/prom/README.md), so it is set exactly when the colour
+//     board is fitted -- with none, finit() would give up on the display
 //     entirely.
 //
 //   * **The register aliases across its whole 2 KiB page.**  There is no
@@ -88,6 +90,7 @@ module sun2_fb_ctl(input 	    CLK,
 		   input 	    WR,
 		   input 	    UDS_n,   // D15:8, the even byte
 		   input 	    LDS_n,   // D7:0,  the odd byte
+		   input 	    color_jumper, // the colour board is the console
 		   output [15:0]    dout,
 		   /* to the display */
 		   output 	    video_en,
@@ -126,7 +129,9 @@ module sun2_fb_ctl(input 	    CLK,
                   r_copy_en,         // 14
                   r_int_en,          // 13
                   1'b0,              // 12  int, never pending
-                  4'b0000,           // 11:8 jumpers: b, a, colour, 1024
+                  2'b00,             // 11:10 jumpers b, a
+                  color_jumper,      // 9    the colour board is the console
+                  1'b0,              // 8    1024x1024: no
                   1'b0,              // 7    aberrant, reads zero
                   r_copybase[6:1],   // 6:1  copy base A17..A22
                   1'b0};             // 0    aberrant, reads zero

@@ -5,7 +5,8 @@
 //  (rtl/sun2-common/top_fpga.v) on the other, and the board-level pieces that
 //  join them.  The machine is fixed by Sun-2.qsf's macro block: a VME Sun-2
 //  with its Rev Q boot PROM, the VME SCSI board, the on-board mono frame
-//  buffer, keyboard/mouse SCC and 82586.
+//  buffer, keyboard/mouse SCC and 82586, and the Sun-2 colour board (cgtwo),
+//  which the OSD can take out.
 //
 //  Clocks (rtl/pll.v, rtl/pll_serial.v)
 //    clk_mem   100.000 MHz  SDRAM, the memory side of the Wishbone bridge, hps_io
@@ -15,8 +16,8 @@
 //    clk_ser     4.9152 MHz the SCCs, the Am9513 and the MM58167
 //    CLK_AUDIO  24.576 MHz  the framework's: the keyboard's beeper
 //
-//  Memory: 8 MiB of main memory and the 128 KiB frame buffer on the SDRAM
-//  board, behind rtl/sun2_mister_sdram.sv.  The boot PROM is not in the
+//  Memory: 8 MiB of main memory, the 128 KiB mono frame buffer and the colour
+//  board's 1 MiB on the SDRAM board, behind rtl/sun2_mister_sdram.sv.  The boot PROM is not in the
 //  bitstream: it is games/Sun-2/boot0.rom, which Main_MiSTer sends on ioctl
 //  index 0 at start-up, and the machine stays in reset until it has arrived.
 //  DDR3 holds the network's mailbox (rtl/sun2_mister_enet.sv) and nothing else.
@@ -68,6 +69,7 @@ module emu
         "-;",
         "O[8:7],Keyboard bell,Normal,Loud,Quiet,Off;",
         "O[11:9],Network,eth0,Off,eth1,macvlan,tap0;",
+        "O[12],Colour board,On,Off;",
         "-;",
         "R0,Reset;",
         "V,v",`BUILD_DATE
@@ -83,6 +85,12 @@ module emu
     // V-Integer is the default, so it is listed first and its status value is
     // 0: video_freak's own numbering is 0 normal, 1 V-integer.
     wire [1:0] ar    = status[2:1];
+
+    // The colour board (doc/cgtwo.md).  On -- the default, status 0 -- fits it
+    // and sets the colour jumper, so the PROM puts its console there and the
+    // screen shows it; the mono board is still in the machine for SunOS.
+    // Off is the machine without it.  Change it with a reset.
+    wire color_on = ~status[12];
     wire [2:0] scale = (status[6:5] == 2'd0) ? 3'd1 :
                        (status[6:5] == 2'd1) ? 3'd0 : {1'b0, status[6:5]};
 
@@ -367,6 +375,13 @@ module emu
     wire         fb_c_req, fb_c_done;
     wire [127:0] fb_c_rdata;
 
+    // the colour board: its engine and its scan-out
+    wire [15:0]  cg_m_line, cg_m_wdata, cs_line;
+    wire [2:0]   cg_m_word;
+    wire [1:0]   cg_m_bs;
+    wire         cg_m_req, cg_m_we, cg_m_done, cs_req, cs_urgent, cs_done;
+    wire [127:0] cl_rdata;
+
     sun2_mister_sdram sdram (
         .clk        (clk_mem),
         .init       (reset_mem),
@@ -382,9 +397,22 @@ module emu
         .wb_line_o  (wb_line),
 
         .fb_c_addr  (fb_c_addr),
-        .fb_c_req   (fb_c_req),
+        .fb_c_req   (fb_c_req & ~color_on),    // only the screen being shown is fetched
         .fb_c_done  (fb_c_done),
         .fb_c_rdata (fb_c_rdata),
+
+        .cg_line    (cg_m_line),
+        .cg_word    (cg_m_word),
+        .cg_req     (cg_m_req),
+        .cg_we      (cg_m_we),
+        .cg_wdata   (cg_m_wdata),
+        .cg_bs      (cg_m_bs),
+        .cg_done    (cg_m_done),
+        .cs_line    (cs_line),
+        .cs_req     (cs_req),
+        .cs_urgent  (cs_urgent),
+        .cs_done    (cs_done),
+        .cl_rdata   (cl_rdata),
 
         .SDRAM_DQ   (SDRAM_DQ),
         .SDRAM_A    (SDRAM_A),
@@ -445,6 +473,21 @@ module emu
     // ---- the machine ----------------------------------------------------------------------
     wire       fb_video_en;
     wire [7:0] diag_leds, todebug;
+
+    wire        slot_sel, slot_we, slot_uds_n, slot_lds_n, slot_reset_n;
+    wire        slot_hit, slot_ack, slot_hold, slot_int;
+    wire [22:0] slot_addr;
+    wire [15:0] slot_din, slot_dout;
+    wire [7:0]  slot_vec;
+
+    // The jumper is read in the CPU's clock; the OSD's is clk_mem's.
+    (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
+    reg  cj_s1 = 1'b0;
+    reg  cj_s2 = 1'b0;
+    always @(posedge cpu_clk) begin
+        cj_s1 <= color_on;
+        cj_s2 <= cj_s1;
+    end
 
     top machine (
         .cpu_clk        (cpu_clk),
@@ -524,6 +567,21 @@ module emu
         .tod_ld         (tod_ld),
         .tod_time       (tod_time),
 
+        .slot_sel       (slot_sel),
+        .slot_addr      (slot_addr),
+        .slot_we        (slot_we),
+        .slot_uds_n     (slot_uds_n),
+        .slot_lds_n     (slot_lds_n),
+        .slot_din       (slot_din),
+        .slot_reset_n   (slot_reset_n),
+        .slot_dout      (slot_dout),
+        .slot_hit       (slot_hit),
+        .slot_ack       (slot_ack),
+        .slot_hold      (slot_hold),
+        .slot_int       (slot_int),
+        .slot_vec       (slot_vec),
+        .color_jumper   (cj_s2),
+
         .wb_cyc_o       (wb_cyc),
         .wb_stb_o       (wb_stb),
         .wb_adr_o       (wb_adr),
@@ -576,13 +634,97 @@ module emu
         .rgb       (rgb)
     );
 
+    // ---- the colour board -------------------------------------------------------
+    wire        cg_retrace, cg_video_en, cm_we;
+    wire [7:0]  cm_addr;
+    wire [23:0] cm_data, cg_rgb;
+
+    sun2_cgtwo cgtwo (
+        .clk        (cpu_clk),
+        .rst_n      (slot_reset_n),
+        .present    (color_on),
+        .mb_sel     (slot_sel),
+        .mb_addr    (slot_addr),
+        .mb_we      (slot_we),
+        .mb_uds_n   (slot_uds_n),
+        .mb_lds_n   (slot_lds_n),
+        .mb_din     (slot_din),
+        .mb_dout    (slot_dout),
+        .mb_hit     (slot_hit),
+        .mb_ack     (slot_ack),
+        .mb_hold    (slot_hold),
+        .int_o      (slot_int),
+        .intvec_o   (slot_vec),
+
+        .mclk       (clk_mem),
+        .mrst       (reset_mem),
+        .m_line     (cg_m_line),
+        .m_word     (cg_m_word),
+        .m_req      (cg_m_req),
+        .m_we       (cg_m_we),
+        .m_wdata    (cg_m_wdata),
+        .m_bs       (cg_m_bs),
+        .m_done     (cg_m_done),
+        .m_rdata    (cl_rdata),
+        .cm_we      (cm_we),
+        .cm_addr    (cm_addr),
+        .cm_data    (cm_data),
+        .video_en   (cg_video_en),
+        .retrace    (cg_retrace)
+    );
+
+    sun2_cgtwo_scanout #(
+        .FB_W     (1152),
+        .FB_H     (900),
+        .SCREEN_W (1160),
+        .SCREEN_H (904)
+    ) cg_scanout (
+        .mclk      (clk_mem),
+        .mrst      (reset_mem),
+        .enable    (color_on),
+        .c_line    (cs_line),
+        .c_req     (cs_req),
+        .c_urgent  (cs_urgent),
+        .c_done    (cs_done),
+        .c_rdata   (cl_rdata),
+        .cm_we     (cm_we),
+        .cm_addr   (cm_addr),
+        .cm_data   (cm_data),
+        .video_en  (cg_video_en),
+        .clk_pixel (clk_pix),
+        .pix_rst   (reset_pix),
+        .cx        (cx),
+        .cy        (cy),
+        .rgb       (cg_rgb),
+        .retrace   (cg_retrace)
+    );
+
+    // The colour picture is two clocks behind the raster (its line buffer's
+    // read, then its colour map's), so the syncs and DE are delayed to match
+    // when it is the one shown.
+    (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
+    reg       co_s1 = 1'b0;
+    reg       show_cg = 1'b0;
+    reg [1:0] de_d = 2'b00, hs_d = 2'b11, vs_d = 2'b11;
+    always @(posedge clk_pix) begin
+        co_s1   <= color_on;
+        show_cg <= co_s1;
+        de_d    <= {de_d[0], de};
+        hs_d    <= {hs_d[0], hs};
+        vs_d    <= {vs_d[0], vs};
+    end
+    wire        v_de  = show_cg ? de_d[1] : de;
+    wire        v_hs  = show_cg ? hs_d[1] : hs;
+    wire        v_vs  = show_cg ? vs_d[1] : vs;
+    wire [23:0] v_rgb = show_cg ? cg_rgb  : rgb;
+
     assign CLK_VIDEO = clk_pix;
     assign CE_PIXEL  = 1'b1;
-    assign VGA_R     = rgb[23:16];
-    assign VGA_G     = rgb[15:8];
-    assign VGA_B     = rgb[7:0];
-    assign VGA_HS    = hs;
-    assign VGA_VS    = vs;
+    assign VGA_R     = v_rgb[23:16];
+    assign VGA_G     = v_rgb[15:8];
+    assign VGA_B     = v_rgb[7:0];
+    assign VGA_HS    = v_hs;
+    assign VGA_VS    = v_vs;
 
     // A one-pixel font scaled by 1080/904 is a font whose strokes are one or two
     // pixels wide depending on where they land, and blurred between.  V-Integer
@@ -591,13 +733,13 @@ module emu
     video_freak video_freak (
         .CLK_VIDEO   (clk_pix),
         .CE_PIXEL    (1'b1),
-        .VGA_VS      (vs),
+        .VGA_VS      (v_vs),
         .HDMI_WIDTH  (HDMI_WIDTH),
         .HDMI_HEIGHT (HDMI_HEIGHT),
         .VGA_DE      (VGA_DE),
         .VIDEO_ARX   (VIDEO_ARX),
         .VIDEO_ARY   (VIDEO_ARY),
-        .VGA_DE_IN   (de),
+        .VGA_DE_IN   (v_de),
         .ARX         ((ar == 2'd0) ? 12'd1160 : (ar == 2'd2) ? 12'd4 : 12'd0),
         .ARY         ((ar == 2'd0) ? 12'd904  : (ar == 2'd2) ? 12'd3 : 12'd0),
         .CROP_SIZE   (12'd0),

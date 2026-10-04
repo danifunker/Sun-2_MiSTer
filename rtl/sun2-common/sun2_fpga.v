@@ -139,6 +139,18 @@ module sun2_fpga(input         cpu_clk,
 		 input 	       vec_int,      // the card is requesting
 		 input [2:0]   vec_level,    // at this level
 		 input [7:0]   vec_num,      // and will supply this vector
+		 // A second one: the Sun-2 colour board, `cgtwo0 ... priority 4
+		 // vector cgtwointr 0xa8' in conf.sun2/GENERIC.  Tie vec2_int low
+		 // where there is none.
+		 input 	       vec2_int,
+		 input [2:0]   vec2_level,
+		 input [7:0]   vec2_num,
+		 // A card that has decoded this TYPE 2 cycle and will answer it in
+		 // its own time: exempt from the bus timeout.  See TIMEOUT.
+		 input 	       mb_hold,
+		 // The video control register's colour jumper: the colour board is
+		 // the console.  See sun2_fb_ctl.v.
+		 input 	       color_jumper,
 		 /* debug */
 		 output [7:0]  diag_leds,
 		 output        en_boot,
@@ -361,12 +373,22 @@ module sun2_fpga(input         cpu_clk,
    //
    // Address and function code are driven in S1, before AS falls in S2, so
    // tracking while AS is high samples the right cycle's.
-   reg  iack_lat;
-   wire iack_now  = FC_CPUCYCLE & vec_int & (P_A[3:1] == vec_level);
+   //
+   // Two vectored interrupters at different levels: the acknowledge names
+   // its level on A3..A1, so which of them answers is decided by the address
+   // and latched with it.
+   reg  iack_lat, iack2_lat;
+   wire iack1_now = FC_CPUCYCLE & vec_int  & (P_A[3:1] == vec_level);
+   wire iack2_now = FC_CPUCYCLE & vec2_int & (P_A[3:1] == vec2_level);
+   wire iack_now  = iack1_now | iack2_now;
    always @(posedge CLK)
-     if (P_AS_n) iack_lat <= iack_now;
+     if (P_AS_n) begin
+        iack_lat  <= iack_now;
+        iack2_lat <= iack2_now;
+     end
 
    wire IACK_VEC  = FC_CPUCYCLE & (P_AS_n ? iack_now : iack_lat);
+   wire IACK_VEC2 = P_AS_n ? iack2_now : iack2_lat;
    assign P_VPA_n = ~(FC_CPUCYCLE & ~IACK_VEC);
 
    // Declared here rather than with the other match wires below because the
@@ -427,7 +449,13 @@ module sun2_fpga(input         cpu_clk,
 	// Sun-2's video board is local memory on the card and answers inside
 	// the timeout; ours shares the CPU's DRAM, so it inherits the CPU
 	// memory's exemption along with its latency.
-	if (~P_AS_n & C_S24 & ~MATCH_MEM & ~MATCH_FB) TIMEOUT <= 1'b1;
+	//
+	// The colour board is in the same position: its pixels are in the
+	// SDRAM the CPU and two scan-outs share, and a raster-op write is a
+	// line read and a write-back.  It asks for the exemption (mb_hold) only
+	// for a cycle it has decoded, so an address no card answers still
+	// times out, which is what the PROM's and SunOS's probes rely on.
+	if (~P_AS_n & C_S24 & ~MATCH_MEM & ~MATCH_FB & ~(mb_hit & mb_hold)) TIMEOUT <= 1'b1;
 	if ( P_AS_n)
 	  begin
 	     C_S4 <= 1'b0;
@@ -1541,6 +1569,7 @@ module sun2_fpga(input         cpu_clk,
 		     .WR(WR & MATCH_FBCTL & C_S8),
 		     .UDS_n(P_UDS_n),
 		     .LDS_n(P_LDS_n),
+		     .color_jumper(color_jumper),
 		     .dout(fbctl_out),
 		     .video_en(fb_video_en),
 		     .fb_int(fb_int)
@@ -1659,7 +1688,7 @@ module sun2_fpga(input         cpu_clk,
 		   MATCH_SYSEN     ? {8'h0, sys_out} :
 		   MATCH_BERR      ? {8'h0, berr_out} :
 		   MATCH_IDPROM    ? {idprom_out, 8'h0} :
-		   IACK_VEC        ? {8'h00, vec_num} :   // the vector, on D7:0
+		   IACK_VEC        ? {8'h00, IACK_VEC2 ? vec2_num : vec_num} :   // the vector, on D7:0
 		   MATCH_PROM_BOOT ? prom_out :
 		   MATCH_PROM      ? prom_out :
 		   MATCH_TIMER     ? timer_out :
@@ -1811,7 +1840,11 @@ module sun2_fpga(input         cpu_clk,
    // it.  A MultiBus machine has no on-board Ethernet, so ether_int is tied low
    // there and this reduces to what it always was.
    assign INT3_n = ~(EN_INT3 | ether_int);
-   assign INT4_n = 1'b1; // FIXME
+   // Level 4: the colour board's retrace interrupt, vectored (above).  The
+   // mono board's own level-4 interrupt is never enabled by anything in the
+   // tree -- see sun2_fb_ctl.v -- and is not wired.
+   wire vec2_req = vec2_int & (vec2_level == 3'd4);
+   assign INT4_n = ~vec2_req;
    assign INT5_n = ~timer_int[2] & ~timer_int[3] & ~timer_int[4] & ~timer_int[5];
    // Both SCCs interrupt at level 6, and the Architecture Manual sections 8.3
    // and 9.3 put "Serial Port" there on both machines.  zs1 -- the keyboard and

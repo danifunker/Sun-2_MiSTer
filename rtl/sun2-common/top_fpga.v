@@ -111,6 +111,29 @@ module top(input         cpu_clk,
 	   input 	 tod_ld,
 	   input [47:0]  tod_time,
 
+`ifdef SUN2_CGTWO
+	   /* A VME card beside the SCSI board, in TYPE 2 space: the Sun-2
+	    colour board (rtl/sun2-vme/sun2_cgtwo.sv).  It lives at the board
+	    top because its pixels are in the board's memory; this is its slot,
+	    all cpu_clk.  slot_hold asks for the bus timeout to wait for it.
+	    color_jumper is the video control register's: the colour board is
+	    the console. */
+	   output 	 slot_sel,
+	   output [22:0] slot_addr,
+	   output 	 slot_we,
+	   output 	 slot_uds_n,
+	   output 	 slot_lds_n,
+	   output [15:0] slot_din,     // CPU -> card
+	   output 	 slot_reset_n, // P.RESET-: VME SYSRESET
+	   input [15:0]  slot_dout,    // card -> CPU
+	   input 	 slot_hit,
+	   input 	 slot_ack,
+	   input 	 slot_hold,
+	   input 	 slot_int,     // level 4, vectored
+	   input [7:0] 	 slot_vec,
+	   input 	 color_jumper,
+`endif
+
 	   /* wishbone */
 	   output 	 wb_cyc_o,
 	   output 	 wb_stb_o,
@@ -279,6 +302,33 @@ module top(input         cpu_clk,
    wire [15:0] mbio_cpu_dout;  // CPU -> card
    wire [15:0] mbio_card_dout; // card -> CPU
    wire        mbio_int;
+
+   // The second vectored interrupter, the timeout exemption and the colour
+   // jumper: the colour board's, in the slot below, or nothing.
+   wire        vec2_int, mb_hold, cg_jumper;
+   wire [2:0]  vec2_level;
+   wire [7:0]  vec2_num;
+`ifdef SUN2_CGTWO
+   assign vec2_int   = slot_int;
+   assign vec2_level = 3'd4;       // conf.sun2/GENERIC: `cgtwo0 ... priority 4'
+   assign vec2_num   = slot_vec;
+   assign mb_hold    = slot_hold;
+   assign cg_jumper  = color_jumper;
+
+   assign slot_sel     = mb_sel;
+   assign slot_addr    = mb_addr;
+   assign slot_we      = mb_we;
+   assign slot_uds_n   = mb_uds_n;
+   assign slot_lds_n   = mb_lds_n;
+   assign slot_din     = mb_cpu_dout;
+   assign slot_reset_n = P_RESET_n;
+`else
+   assign vec2_int   = 1'b0;
+   assign vec2_level = 3'd0;
+   assign vec2_num   = 8'h00;
+   assign mb_hold    = 1'b0;
+   assign cg_jumper  = 1'b0;
+`endif
    
    
    sun2_fpga sun2(.cpu_clk(cpu_clk),
@@ -366,6 +416,11 @@ module top(input         cpu_clk,
 		  .mbio_hit(mbio_hit),
 		  .mbio_ack(mbio_ack),
 		  .mbio_int(mbio_int),
+		  .vec2_int(vec2_int),
+		  .vec2_level(vec2_level),
+		  .vec2_num(vec2_num),
+		  .mb_hold(mb_hold),
+		  .color_jumper(cg_jumper),
 
 		  .diag_leds(diag_leds),
 		  .en_boot(en_boot),
@@ -728,6 +783,9 @@ module top(input         cpu_clk,
 		       .ether_reset(scsi_wb_clr),
 		       .dvma_err());
 
+   wire [15:0] vscsi_dout;
+   wire        vscsi_hit, vscsi_ack;
+
    sun2_vme_scsi #(.SCSI_BASE(`VME_SCSI_BASE),
 		   .INIT_MON (`SUN2_RTC_MON),
 		   .INIT_DAY (`SUN2_RTC_DAY),
@@ -746,9 +804,9 @@ module top(input         cpu_clk,
       .mb_uds_n(mb_uds_n),
       .mb_lds_n(mb_lds_n),
       .mb_din(mb_cpu_dout),
-      .mb_dout(mb_card_dout),
-      .mb_hit(mb_hit),
-      .mb_ack(mb_ack),
+      .mb_dout(vscsi_dout),
+      .mb_hit(vscsi_hit),
+      .mb_ack(vscsi_ack),
 
       // Level 2, and vectored -- sun2_fpga answers the acknowledge for this
       // level with intvec and a DTACK rather than with VPA.  The boot PROM
@@ -779,6 +837,19 @@ module top(input         cpu_clk,
 
    assign mb_ether_int  = 1'b0;
    assign vec_level     = 3'd2;   // conf.sun2/GENERIC: `sc0 ... priority 2'
+
+   // The VME backplane: the SCSI board and whatever is in the slot.  As for
+   // the MultiBus cards below, each card's acknowledge is qualified by its own
+   // hit, and the data is a mux on the hits.
+`ifdef SUN2_CGTWO
+   assign mb_hit       = vscsi_hit | slot_hit;
+   assign mb_ack       = (vscsi_hit & vscsi_ack) | (slot_hit & slot_ack);
+   assign mb_card_dout = slot_hit ? slot_dout : vscsi_dout;
+`else
+   assign mb_hit       = vscsi_hit;
+   assign mb_ack       = vscsi_ack;
+   assign mb_card_dout = vscsi_dout;
+`endif
 `else
    // No vectored interrupter, so every acknowledge autovectors as before.
    assign vec_int       = 1'b0;

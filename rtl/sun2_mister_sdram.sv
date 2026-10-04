@@ -20,9 +20,19 @@
 //   main memory    Wishbone word w (w < 2 Mi)   -> SDRAM words 2w, 2w+1
 //   frame buffer   Wishbone word FB_WB_BASE + r -> SDRAM words FB_SDRAM_WORD + 2r, +1
 //   fb_scanout     c_addr (16-bit words, beat-aligned) -> FB_SDRAM_WORD + c_addr
+//   colour board   line L (16 bytes, pixels 16L..16L+15) -> CG_SDRAM_WORD + 8L
 //
-// so 8 MiB of main memory sits at the bottom of the chip and the 128 KiB mono
-// frame buffer 16 MiB up, inside the smallest (32 MB) MiSTer SDRAM module.
+// so 8 MiB of main memory sits at the bottom of the chip, the 128 KiB mono
+// frame buffer 16 MiB up and the colour board's megabyte 24 MiB up, inside the
+// smallest (32 MB) MiSTer SDRAM module -- and in three different banks, so the
+// rows each keeps open stay open.
+//
+// Four clients.  The two scan-outs have deadlines and the CPU and the colour
+// board's engine do not.  The mono scan-out is small (1/8 of a line of SDRAM
+// time) and keeps its absolute priority; it is gated off outside when the
+// colour board is what is displayed.  The colour scan-out is half the SDRAM, so
+// it takes turns with the CPU and the engine and gets priority only when it
+// says it is about to run dry (cs_urgent; see sun2_cgtwo_scanout.sv).
 //
 // Handshakes.  Both clients hold a request until it is answered and only then
 // move on, and both see the answer a clock after it is given: the bridge drops
@@ -45,7 +55,8 @@
 
 module sun2_mister_sdram #(
     parameter [29:0] FB_WB_BASE    = 30'h03E00000,  // sun2_config.vh's default
-    parameter [25:0] FB_SDRAM_WORD = 26'h0800000    // 16 MiB, in 16-bit words
+    parameter [25:0] FB_SDRAM_WORD = 26'h0800000,   // 16 MiB, in 16-bit words
+    parameter [25:0] CG_SDRAM_WORD = 26'h0C00000    // 24 MiB
 ) (
     input  wire         clk,            // the controller's clock, ~100 MHz
     input  wire         init,           // hold the controller in its power-up sequence
@@ -66,6 +77,25 @@ module sun2_mister_sdram #(
     input  wire         fb_c_req,       // a level, held for the whole line
     output reg          fb_c_done  = 1'b0,
     output reg  [127:0] fb_c_rdata = 128'h0,
+
+    // The colour board's engine (sun2_cgtwo): a line read, or one halfword
+    // written with its byte selects.  A level, held until cg_done.
+    input  wire [15:0]  cg_line,
+    input  wire [2:0]   cg_word,
+    input  wire         cg_req,
+    input  wire         cg_we,
+    input  wire [15:0]  cg_wdata,
+    input  wire [1:0]   cg_bs,          // [1] the even byte, D15:8
+    output reg          cg_done    = 1'b0,
+
+    // The colour board's scan-out (sun2_cgtwo_scanout): line reads.
+    input  wire [15:0]  cs_line,
+    input  wire         cs_req,
+    input  wire         cs_urgent,
+    output reg          cs_done    = 1'b0,
+
+    // A line either of the colour board's clients read, valid with its done.
+    output reg  [127:0] cl_rdata   = 128'h0,
 
     // SDRAM pins
     inout  wire [15:0]  SDRAM_DQ,
@@ -156,6 +186,17 @@ module sun2_mister_sdram #(
 
     reg [2:0]   st      = S_IDLE;
     reg         for_fb  = 1'b0;         // whose read this is
+    reg         for_cg  = 1'b0;
+    reg         for_cs  = 1'b0;
+    // Turns between the colour scan-out, the CPU and the engine: whoever was
+    // served last goes to the back.  0 scan-out, 1 CPU, 2 engine.
+    reg [1:0]   last_rr = 2'd0;
+    wire        wb_want = wb_cyc_i & wb_stb_i;
+    wire [1:0]  pick =
+        (cs_req & cs_urgent) ? 2'd0 :
+        (last_rr == 2'd0)    ? (wb_want ? 2'd1 : cg_req  ? 2'd2 : 2'd0) :
+        (last_rr == 2'd1)    ? (cg_req  ? 2'd2 : cs_req  ? 2'd0 : 2'd1) :
+                               (cs_req  ? 2'd0 : wb_want ? 2'd1 : 2'd2);
     reg [2:0]   widx    = 3'd0;
     reg [127:0] line    = 128'h0;
     reg [1:0]   lane    = 2'd0;
@@ -166,23 +207,50 @@ module sun2_mister_sdram #(
     always @(posedge clk) begin
         wb_ack_o  <= 1'b0;
         fb_c_done <= 1'b0;
+        cg_done   <= 1'b0;
+        cs_done   <= 1'b0;
 
         if (init) begin
             st   <= S_IDLE;
             c_rd <= 1'b0;
             c_wr <= 1'b0;
         end else case (st)
-            S_IDLE:
-                // The frame buffer first: it has a deadline and asks for a few
-                // lines' worth every scan line, so the CPU barely notices.
+            S_IDLE: begin
+                for_fb <= 1'b0;
+                for_cg <= 1'b0;
+                for_cs <= 1'b0;
+                // The mono frame buffer first: it has a deadline and asks for
+                // a few lines' worth every scan line, so the others barely
+                // notice.
                 if (fb_c_req) begin
                     for_fb <= 1'b1;
                     c_word <= FB_SDRAM_WORD + {fb_c_addr[24:3], 3'b000};
                     c_rd   <= 1'b1;
                     st     <= S_RD;
-                end else if (wb_cyc_i && wb_stb_i) begin
-                    for_fb <= 1'b0;
-                    lane   <= wb_adr_i[1:0];
+                end else if (pick == 2'd0 && cs_req) begin
+                    for_cs  <= 1'b1;
+                    last_rr <= 2'd0;
+                    c_word  <= CG_SDRAM_WORD + {7'd0, cs_line, 3'b000};
+                    c_rd    <= 1'b1;
+                    st      <= S_RD;
+                end else if (pick == 2'd2 && cg_req) begin
+                    for_cg  <= 1'b1;
+                    last_rr <= 2'd2;
+                    if (cg_we) begin
+                        c_word  <= CG_SDRAM_WORD + {7'd0, cg_line, cg_word};
+                        c_din   <= cg_wdata;
+                        c_bs    <= cg_bs;
+                        c_wr    <= 1'b1;
+                        hi_left <= 1'b0;
+                        st      <= S_WR;
+                    end else begin
+                        c_word  <= CG_SDRAM_WORD + {7'd0, cg_line, 3'b000};
+                        c_rd    <= 1'b1;
+                        st      <= S_RD;
+                    end
+                end else if (pick == 2'd1 && wb_want) begin
+                    last_rr <= 2'd1;
+                    lane    <= wb_adr_i[1:0];
                     if (!wb_we_i) begin
                         c_word <= {wb_word[25:3], 3'b000};     // the whole line
                         c_rd   <= 1'b1;
@@ -210,6 +278,7 @@ module sun2_mister_sdram #(
                         st       <= S_GAP;
                     end
                 end
+            end
 
             S_RD:
                 if (ready_rise) begin
@@ -225,6 +294,10 @@ module sun2_mister_sdram #(
                     if (for_fb) begin
                         fb_c_rdata <= {dout, line[111:0]};
                         fb_c_done  <= 1'b1;
+                    end else if (for_cs | for_cg) begin
+                        cl_rdata <= {dout, line[111:0]};
+                        cs_done  <= for_cs;
+                        cg_done  <= for_cg;
                     end else begin
                         wb_line_o <= {dout, line[111:0]};
                         wb_dat_o  <= (lane == 2'd3) ? {dout, line[111:96]}
@@ -249,7 +322,10 @@ module sun2_mister_sdram #(
                         st      <= S_WR;
                     end else begin
                         c_wr     <= 1'b0;
-                        wb_ack_o <= 1'b1;
+                        if (for_cg)
+                            cg_done  <= 1'b1;
+                        else
+                            wb_ack_o <= 1'b1;
                         st       <= S_GAP;
                     end
                 end else if (!c_wr)

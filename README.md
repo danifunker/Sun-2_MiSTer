@@ -6,8 +6,9 @@ real boot PROMs.
 
 This repository is the **MiSTer** port. It builds one machine, a **Sun-2/160**:
 the VME CPU board with its Rev Q boot PROM, the Sun VME SCSI board, the
-on-board 1152×900 mono frame buffer, keyboard, mouse and 82586, and the RD68011
-CPU core at 20 MHz. A `cgtwo` colour board is next. The machine is fixed in
+on-board 1152×900 mono frame buffer, keyboard, mouse and 82586, the Sun-2
+colour board (`cgtwo`, 1152×900×8), and the RD68011 CPU core at 20 MHz. The
+machine is fixed in
 `Sun-2.qsf`'s macro block. The replica it is ported from also ran on a QMTech
 Wukong and an Arrow DECA; those board flows have been removed from this tree
 and remain in its git history. Most of what follows describes that work, and
@@ -22,12 +23,13 @@ multi-user to a login and `suntools`, and takes the 4.0.3 upgrade tapes over it
 to a 4.0.3 login -- on disks up to the Sun-2's 1 GiB limit, with the mouse
 and the clock taken from the MiSTer, the keyboard's bell on its audio, and
 Ethernet onto the MiSTer's network (with a Main_MiSTer that has Sun-2 support;
-see below). Not there yet: colour (the cgtwo).
+see below), and **colour**: the Sun-2 colour board, which SunOS attaches as
+`cgtwo0` and SunView draws on (see *Colour*, below).
 
 What a user needs:
 
-* **A MiSTer with an SDRAM board** (32 MB or more). Main memory and the mono
-  frame buffer live there.
+* **A MiSTer with an SDRAM board** (32 MB or more). Main memory, the mono
+  frame buffer and the colour board's megabyte live there.
 * **The boot PROM**, as `games/Sun-2/boot0.rom`: the 32 KiB Sun-2/50 / 2/160
   Rev Q PROM image (sha256 `8560ef68…4a3f`, the same image as
   `Inputs/boot0.rom`). It is not in the bitstream. Main_MiSTer loads it at
@@ -111,6 +113,37 @@ V-Integer, shows each Sun pixel as exactly one screen pixel, in a border. In
 
 `video_mode=4` (1280×1024@60) suits a 5:4 monitor, with the picture 1:1 and a
 narrow border.
+
+### Colour
+
+The machine has the **Sun-2 colour board** (`cgtwo`): 1152×900, 256 colours
+from a palette of 16.7 million, and the raster-op chips SunView draws with.
+The OSD's *Colour board* (**On** by default) fits it and makes it the console:
+the PROM's banner then says `Model Sun-2/160`, its text appears on the colour
+screen, and that is the screen shown. The mono frame buffer is still in the
+machine, as in a real 2/160, but is not displayed. *Off* is the machine without
+the board: the mono screen, and the banner's `Sun-2/50 or Sun-2/160`. Change
+it, then reset.
+
+SunOS needs a kernel with the colour driver to use it. **GENERIC** has one,
+and it says so at boot:
+
+    cgtwo0 at vme24 0x400000 vec 0xa8
+    cgtwo0: Sun-2 color board
+
+GENERIC_SMALL, the kernel the 4.0.3 upgrade installs as `/vmunix`, has none.
+It still boots on the colour console (the PROM draws its messages), but it
+reports `No default frame buffer found` and SunView will not start. The upgrade
+keeps the GENERIC kernel as `/vmunix.orig`, so boot that one from the PROM's
+`>` prompt with
+
+    b sd()vmunix.orig
+
+or copy it over `/vmunix`. Then `suntools` runs on the colour screen, and
+`/usr/demo` has colour to show it, `spheresdemo` for one.
+
+How the board was worked out, with no manual to work from, and how it is
+built and tested, is in [`doc/cgtwo.md`](doc/cgtwo.md).
 
 ### Logging in, and SunView
 
