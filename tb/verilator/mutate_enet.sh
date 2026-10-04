@@ -35,7 +35,7 @@ run "the FCS not played"             -e 's/if (ri + 1.d1 == rx_len) begin/if (ri
 run "the hash read as length"        -e 's/rdata\[10:0\] <= RX_MAX;/rdata[63:0] <= RX_MAX;/'
 run "eight RX slots, not sixteen"    -e 's/{rx_rptr\[3:0\], 8.h00}/{1'"'"'b0, rx_rptr[2:0], 8'"'"'h00}/'
 run "four TX slots, not eight"       -e 's/{tx_wptr\[2:0\], 8.h00}/{1'"'"'b0, tx_wptr[1:0], 8'"'"'h00}/'
-run "the TX ring's room ignored"     -e 's/if (tx_wptr - rdata < TX_RING) begin/if (1'"'"'b1) begin/'
+run "the TX ring's room ignored"     -e 's/if (16'"'"'(tx_wptr\[15:0\] - rdata\[15:0\]) < 16'"'"'(TX_RING)) begin/if (1'"'"'b1) begin/'
 run "a full ring drops at once"      -e 's/end else if (twait == TX_WAIT) begin/end else if (1'"'"'b1) begin/'
 run "a full ring never gives up"     -e 's/end else if (twait == TX_WAIT) begin/end else if (1'"'"'b0) begin/'
 run "magic published first"          -e 's/(pstep == 3.d6) ? {1.b1, 15.d0, mac_q} : 64.d0,/(pstep == 3'"'"'d6) ? {1'"'"'b1, 15'"'"'d0, mac_q} : (pstep == 3'"'"'d0) ? MAGIC : 64'"'"'d0,/'

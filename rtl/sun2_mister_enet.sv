@@ -412,13 +412,18 @@ module sun2_mister_enet #(
                 else if (poll == 0)
                     mem(0, A_RXWPTR, 64'd0, E_RX_WPTR);
 
-            // transmit: room in the ring, eight bytes into a word, a word into the slot
-            E_TX_RPTR:
-                if (tx_wptr - rdata < TX_RING) begin
+            // transmit: room in the ring, eight bytes into a word, a word into the slot.
+            // The pointers are 64 bits in the mailbox, but they are never more
+            // than the ring apart, so the low 16 bits say whether there is room;
+            // and the buffer's read address is set whatever the answer, so that
+            // the comparison does not reach the RAM's address register in the
+            // same clock -- that path missed timing at 100 MHz.
+            E_TX_RPTR: begin
+                txbuf_raddr <= '0;
+                if (16'(tx_wptr[15:0] - rdata[15:0]) < 16'(TX_RING)) begin
                     ei          <= '0;
                     elen        <= tx_len;      // steady: the MII side holds it while it asks
                     pack        <= '0;
-                    txbuf_raddr <= '0;
                     est         <= E_TX_ADDR;
                 end else if (twait == TX_WAIT) begin
                     tx_ack <= 1'b1;             // nobody is taking frames: dropped
@@ -427,6 +432,7 @@ module sun2_mister_enet #(
                     retry <= RETRY;             // full: the 82586 defers on CRS meanwhile
                     est   <= E_IDLE;
                 end
+            end
             E_TX_ADDR:
                 est <= E_TX_BYTE;               // the buffer's read latency
             E_TX_BYTE: begin

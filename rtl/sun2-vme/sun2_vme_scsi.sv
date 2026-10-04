@@ -54,7 +54,7 @@ module sun2_vme_scsi #(
 ) (
     input  wire        CLK,
     input  wire        RESET,        // the machine's reset; VME SYSRESET
-    input  wire        por_reset,    // power-on only -- the clock is battery backed
+    input  wire        por_reset,    // configuration only -- the clock is battery backed
     input  wire        clk4m9152,    // the 4.9152 MHz oscillator, for the RTC
 
     // ---- VME slave, through the machine's card port ----------------------
@@ -223,7 +223,9 @@ module sun2_vme_scsi #(
    // decode is new.
    //
    // Reset is por_reset and not RESET: the real chip has a lithium cell and is
-   // not affected by a bus reset, a watchdog or a RESET instruction.
+   // not affected by a bus reset, a watchdog, a RESET instruction or the
+   // machine being switched off, so top_fpga.v drives it with the FPGA's
+   // configuration alone.
    wire [7:0] rtc_out;
    mm58167 #(.INIT_MON (INIT_MON),  .INIT_DAY (INIT_DAY),
              .INIT_WDAY(INIT_WDAY), .INIT_HOUR(INIT_HOUR),

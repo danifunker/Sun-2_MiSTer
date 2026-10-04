@@ -1195,8 +1195,14 @@ an external reset function. No other devices are affected."
 Here that is `P_RESET_n = ~machine_reset & ~RESET_OUT` in `top_fpga.v` (the
 peripheral net, carrying `sun2_ether_ctl`, `sun2_fb_ctl` and the bus cards),
 `sys_reset` (the enable and diagnostic registers, the MMU decode, DVMA), and
-`por_reset` in `sun2_fpga.v` — asserted once at configuration and never
-re-armed by a button, a watchdog or a RESET instruction. `por_reset` exists
+`por_reset` in `sun2_fpga.v` — the machine switched on: the FPGA's
+configuration and, on a MiSTer, every reset from outside the machine (the
+OSD's Reset, a core or MGL load), but never the watchdog or a RESET
+instruction. Until 2026-10-04 it was configuration only, so the OSD's Reset
+left counter 1 programmed and the monitor printed `Watchdog reset!` and stopped
+at `>` instead of auto-booting. The battery-backed time-of-day clock has
+`cfg_reset`, configuration only, since MiSTer's time reaches it once a core
+load. `por_reset` exists
 because an FPGA has to start somewhere: `z8530_scc.sv` has no `initial` blocks
 and no declaration initialisers, so with no reset at all its FIFO pointers,
 soft-reset counters and interrupt latches stay X *for ever*, putting X on RR0

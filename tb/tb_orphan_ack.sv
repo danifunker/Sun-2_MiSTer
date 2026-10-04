@@ -65,7 +65,8 @@ module tb_orphan_ack;
 
    sun2_fpga dut (
        .cpu_clk (cpu_clk), .clk40 (clk40), .clk4m9152 (clk4m9152), .C100 (),
-       .sys_reset (sys_reset), .P_VPA_n (), .P_BERR_n (P_BERR_n), .P_DTACK_n (P_DTACK_n),
+       .sys_reset (sys_reset), .power_on (sys_reset),
+       .P_VPA_n (), .P_BERR_n (P_BERR_n), .P_DTACK_n (P_DTACK_n),
        .P_RESET_n (~sys_reset), .P_HALT_n (),
        .P_AS_n (P_AS_n), .P_RW_n (P_RW_n), .P_UDS_n (P_UDS_n), .P_LDS_n (P_LDS_n),
        .P_BG_n (1'b1), .BUS_EN (1'b1),
@@ -77,7 +78,7 @@ module tb_orphan_ack;
        .ether_int_en (), .ether_int (1'b0), .ether_bus_err (1'b0),
        .phy_id (16'h0), .phy_present (1'b0), .phy_cfg_done (1'b0), .phy_link (1'b0),
        .phy_fd (1'b0), .phy_speed (2'b0), .phy_crs_stuck (1'b0),
-       .fb_video_en_o (), .mb_sel (), .por_reset_o (),
+       .fb_video_en_o (), .mb_sel (), .cfg_reset_o (),
        .mb_addr (), .mb_we (), .mb_uds_n (), .mb_lds_n (), .mb_dout (),
        .mb_din (16'h0), .mb_hit (1'b0), .mb_ack (1'b0), .mb_int2 (1'b0),
        .mbio_sel (), .mbio_addr (), .mbio_we (), .mbio_uds_n (), .mbio_lds_n (),

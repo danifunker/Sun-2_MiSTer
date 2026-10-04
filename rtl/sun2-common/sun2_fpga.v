@@ -7,6 +7,7 @@ module sun2_fpga(input         cpu_clk,
 		 input 	       clk4m9152,
 		 output        C100,
 		 input 	       sys_reset, // board reset => also CPU reset
+		 input 	       power_on,  // the machine switched on: see por_reset
 		 output        P_VPA_n,
 		 output        P_BERR_n,
 		 output        P_DTACK_n,
@@ -86,8 +87,9 @@ module sun2_fpga(input         cpu_clk,
 		  timeout, which is how every one of the PROM's probes
 		  discovers there is no card. */
 		 output        mb_sel,
-		 // The power-on reset, for a card carrying something battery backed.
-		 output 	       por_reset_o,
+		 // The FPGA's configuration, once: for a card carrying something
+		 // battery backed.
+		 output 	       cfg_reset_o,
 
 		 output [22:0] mb_addr,
 		 output        mb_we,
@@ -322,17 +324,28 @@ module sun2_fpga(input         cpu_clk,
    // spurious Abort again, with the X sitting directly on the bit instead of
    // reaching it by some path nobody pinned down.
    //
-   // por_reset is that one reset: asserted while the machine has never yet
-   // been out of reset, and never again.  A button press, a watchdog or a
-   // RESET instruction cannot re-arm it, which is what makes it a model of
-   // powering the board up rather than of resetting it.  It replaces POR_n,
-   // which was an `initial' block with # delays -- simulation-only, and a
-   // second continuous driver on P_HALT_n besides.
-   reg 	por_done = 1'b0;
+   // por_reset is that one reset: the machine being switched on.  It is
+   // power_on, which top_fpga.v drives from the reset that comes from outside
+   // the machine -- the FPGA's configuration, and on a MiSTer every reset
+   // Main applies: the OSD's Reset, a core or MGL load.  Each of those is the
+   // machine switched off and on, so the monitor must find counter 1 back at
+   // its power-up 0x0B00; when it did not, it took the OSD's Reset for the
+   // watchdog, printed `Watchdog reset!' and stopped at its prompt instead of
+   // booting.  The watchdog and the RESET instruction come from inside the
+   // machine and do not reach it, so a double bus fault is still told apart.
+   // It replaces POR_n, which was an `initial' block with # delays --
+   // simulation-only, and a second continuous driver on P_HALT_n besides.
+   //
+   // cfg_reset is narrower: the FPGA's configuration, and never again.  Only
+   // the battery-backed time-of-day clock waits for it.  Switching a Sun off
+   // and on does not stop its clock, and MiSTer's time is put in it once a
+   // core load (sun2_mister_tod.sv), so no reset after that may clear it.
+   wire por_reset = power_on;
+   reg 	cfg_done = 1'b0;
    always @(posedge cpu_clk)
-     if (~sys_reset) por_done <= 1'b1;
-   wire por_reset = sys_reset & ~por_done;
-   assign por_reset_o = por_reset;
+     if (~sys_reset) cfg_done <= 1'b1;
+   wire cfg_reset = sys_reset & ~cfg_done;
+   assign cfg_reset_o = cfg_reset;
 
    // layers shortcuts
    wire FC_CTRLLAYER;
@@ -1634,9 +1647,9 @@ module sun2_fpga(input         cpu_clk,
    // by UDS for the reason ctx_reg.v records: a 68010 byte write drives the
    // byte on both halves of the data bus.
    //
-   // reset_n is por_reset, not sys_reset.  A battery-backed clock is the same
-   // category as the Am9513 and the SCCs -- see the reset discussion above --
-   // and a button press or a watchdog must not set the time back to zero.
+   // reset_n is cfg_reset, not sys_reset or even por_reset: a battery-backed
+   // clock keeps going when the machine is switched off -- see the reset
+   // discussion above -- so no reset may set the time back to zero.
    assign MATCH_TOD = MATCH_RTC;
 
    // What the clock reads at configuration.  There is no battery here, so it
@@ -1662,7 +1675,7 @@ module sun2_fpga(input         cpu_clk,
 	     .INIT_MIN (`SUN2_RTC_MIN),
 	     .INIT_SEC (`SUN2_RTC_SEC))
    tod (.CLK(CLK),
-		.reset_n(~por_reset),
+		.reset_n(~cfg_reset),
 		.DIN(P_DIN[15:8]),
 		.DOUT(tod_out),
 		.addr(P_A[5:1]),

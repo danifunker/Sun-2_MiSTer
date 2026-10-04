@@ -18,6 +18,7 @@
 //                   '|' for Return, '!' for the abort (Right Alt+F1, A) and
 //                   '~' for a half-second pause
 //   +status=<hex>   the OSD's status word
+//   +osd_reset_ms=<ms>  the OSD's Reset at that time: status bit 0 for 1 ms
 `timescale 1ps/1ps
 
 module hps_io #(
@@ -96,6 +97,17 @@ module hps_io #(
             $display("[%0t] hps_io: sent %0d bytes of %s on index %0d", $time, n, name, index);
         end
     endtask
+
+    initial begin : osd_reset
+        real t;
+        if ($value$plusargs("osd_reset_ms=%f", t)) begin
+            #(longint'(t * 1.0e9));
+            $display("[%0t] hps_io: the OSD's Reset", $time);
+            status[0] = 1'b1;
+            #(64'd1_000_000_000);
+            status[0] = 1'b0;
+        end
+    end
 
     initial begin
         logic [127:0] st;

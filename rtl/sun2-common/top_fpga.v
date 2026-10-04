@@ -273,7 +273,7 @@ module top(input         cpu_clk,
    wire [15:0] cpu_dout;
 
    // The alternate master's, and the Ethernet control register's signals.
-   wire        por_reset;
+   wire        cfg_reset;
    wire        vec_int;
    wire [2:0]  vec_level;
    wire [7:0]  vec_num;
@@ -335,7 +335,8 @@ module top(input         cpu_clk,
 		  .clk40(clk40),
 		  .C100(C100),
 		  .clk4m9152(clk4m9152),
-		  .por_reset_o(por_reset),
+		  .cfg_reset_o(cfg_reset),
+		  .power_on(sys_reset),     // a reset from outside: the machine switched on
 		  .vec_int(vec_int),
 		  .vec_level(vec_level),
 		  .vec_num(vec_num),
@@ -795,7 +796,7 @@ module top(input         cpu_clk,
 		   .INIT_SEC (`SUN2_RTC_SEC)) vmescsi
      (.CLK(C100),
       .RESET(~P_RESET_n),          // P.RESET-: a card on the bus
-      .por_reset(por_reset),       // the clock is battery backed
+      .por_reset(cfg_reset),       // the clock is battery backed: configuration only
       .clk4m9152(clk4m9152),
 
       .mb_sel(mb_sel),
