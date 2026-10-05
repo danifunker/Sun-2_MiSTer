@@ -316,7 +316,23 @@ machine its own:
   real 2/50 or 2/160's PROM works as it is.
 * **Main_MiSTer with Sun support** (below) makes one by itself when there is
   no `boot1.rom`: Sun's prefix `08:00:20` and the last three bytes of the
-  MiSTer's own Ethernet address, which are the serial number as well.
+  MiSTer's own Ethernet address, which are the serial number as well. It is
+  made afresh at every core load and never written to the SD card, so the
+  Sun's identity follows the MiSTer: another MiSTer or another network adapter
+  gives it another Ethernet address and `hostid`.
+
+**`releases/Sun-2_mkidprom.py`** writes a `boot1.rom`, on the MiSTer or
+anywhere with Python 3. With no arguments it writes exactly the ID PROM Main
+makes for that MiSTer, which pins the identity it has now; `--mac` and
+`--serial` choose others, and `--show` decodes an existing one and checks its
+checksum:
+
+    python3 Sun-2_mkidprom.py
+    python3 Sun-2_mkidprom.py --mac 08:00:20:12:34:56 --serial 1234567
+    python3 Sun-2_mkidprom.py --show
+
+It writes `/media/fat/games/Sun-2/boot1.rom` (`-o` for elsewhere) and will not
+replace one without `--force`; load the core again for it to take effect.
 
 **The network** is the CPU board's own Intel 82586, whole in the FPGA. The core
 plays the transceiver behind it and passes its frames through DDR3 to
@@ -359,7 +375,7 @@ generated sources.
 | `rtl/vendor/` | third-party cores, copied in unmodified; see its README |
 | `rtl/sun2_mister_*.sv`, `rtl/sdram.sv`, `rtl/pll*.v` | the MiSTer glue |
 | `sys/` | Template_MiSTer's framework, verbatim |
-| `releases/` | the core, the boot PROM and a Main_MiSTer with Sun support, ready to copy to a MiSTer |
+| `releases/` | the core, the boot PROM, a Main_MiSTer with Sun support and `Sun-2_mkidprom.py` (an ID PROM writer), ready to copy to a MiSTer |
 | `doc/prom/` | an annotated disassembly of the boot PROM |
 | `tb/verilator/` | unit tests for the MiSTer glue and the tape drive: `make -C tb/verilator` (Verilator 5); `make -C tb/verilator tb_emu` runs the whole core, `TAPE=`/`DISK=`/`KEYS=` to feed it |
 | `tools/mktape` | tape images (`.qic`) from a SunOS release, their `format.dat` taught the disks it makes, and an empty labelled disk to install onto |

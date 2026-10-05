@@ -16,5 +16,6 @@ tools/ufsread       text eol=lf
 
 # What goes on a MiSTer is bytes, whatever its name.
 releases/**         binary
+releases/*.py       text eol=lf diff
 *.rbf               binary
 *.rom               binary
